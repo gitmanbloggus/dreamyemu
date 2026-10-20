@@ -9,6 +9,8 @@ pub mod cpu;
 pub mod input;
 pub mod loader;
 pub mod library;
+pub mod msm7201a;
+pub mod msm7201a_serial;
 pub mod machine;
 pub mod ponte;
 pub mod rede;

@@ -1,0 +1,9 @@
+Manifest-Version: 1.0
+Created-By: 1.0 (Android SignApk)
+
+Name: META-INF/com/google/android/update-script
+SHA1-Digest: Z3Da36TKd6+kIT2Xw/Pyy0w0bXE=
+
+Name: spl.bin
+SHA1-Digest: G2bAnnBPiyVVJ3FCcn0aWwyfOS0=
+

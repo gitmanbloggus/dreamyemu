@@ -48,7 +48,13 @@ commit.
   (`taget=0xA8100000`, sic) served page-by-page from the entry-8 image, then
   `Boot image is not exist` (0xAA fill is no valid image — graceful abort),
   `szCPLDstrlen=0x5`, `UART0:Cmd>`. The run is delay-bound but progressing
-  until the prompt; afterwards it waits for UART RX input that never comes.
+  until the prompt; host keystrokes now reach the shell through
+  RX injection (queue + `[0xB2800008]` bit 0 / `[0xB280000C]`
+  data byte, cleared synchronously at the `getc` load `0x88004034`;
+  SDL text input wired; verified live, see
+  `docs/implementacao/23-serial-rx.md`). Open RX leftovers:
+  decode `0x880047FC`'s nonzero-return path (never taken at park),
+  live-test a >255-char line and a backspace keystroke.
   Stubs so far (all zeroed RAM windows answering "what comes after?"): cold
   probe, `0xB5400000`, `0xAA0FC000` (+ready bit forced at `+0x44`),
   `0xA8081000`, `0xBD000000`, `0xB2A00C00` (+`CMD_PTR_RDY` `0xB2A00C10` /
@@ -290,7 +296,15 @@ commit.
 Timer IRQs deliver once then go silent; the boot parks after `neigh_init`
 (idle loop, no more context switches). Proven live so far:
 
-- `cpsid`/`cpsie` were inverted (fixed + regression test).
+- `cpsid`/`cpsie` were inverted TWICE: the first \"fix\" matched a
+  swapped objdump print table (F108 shown as `cpsie`) and kept the
+  inversion live — every guest disable enabled and vice versa. The
+  real mapping (verified by assembling both mnemonics with
+  arm-none-eabi-as: `cpsie i`=0xF1080080/imod 2/CLEAR,
+  `cpsid i`=0xF10C0080/imod 3/SET) landed 2026-10-23 with the
+  regression test corrected the same way. This inversion was the
+  sched.c:4032 BUG_ON: __do_softirq's post-loop cpsid left I
+  clear instead of set.
 - First-tick catch-up loop (`-ETIME` from wall-clock COUNT) broken by
   forcing `clockevents_program_event` success (TICKBRK).
 - Nested-tick `BUG_ON` fixed with a rising-edge delivery latch
@@ -314,34 +328,57 @@ Timer IRQs deliver once then go silent; the boot parks after `neigh_init`
   samples the I-bit directly instead of polling the line.
 - Guest-paced counters (`CONTAGEM_GPT` +4/slice, `CONTAGEM_DGT`
   +72/slice ≈ 0.1 ms/slice at 19.2 MHz) replacing wall-clock
-  `epoca`: MATCH deltas stay in the future, `-ETIME` catch-up
-  gone. TICKBRK forcing currently disabled (observe-only) to test
-  whether program_event succeeds on its own.
+  `epoca`: MATCH deltas stay in the future. TICKBRK started as a
+  pure success-forcer, went observe-only for the -ETIME
+  diagnosis, and is now a host-side re-arm (see below).
 - Restored the wide `udelay` skip (a duplicate same-address trap
   had evicted it; every driver `mdelay` was executing flat-out).
 
 Still open (2026-10-23 evening):
 
-- The first tick never COMPLETES: its catch-up loop
-  (`ktime_get` → `clockevents_program_event` → `-ETIME` → retry +
-  `tick_periodic`) spins hundreds of thousands of iterations —
-  `MATCH` is programmed exactly once (`0x4CAC7`, setup path at
-  `0xC002AC08`) and never again, so the one-shot latch correctly
-  holds the line at a single `TICKH` and the old double-tick
-  `BUG_ON` is gone (all `RPX` show `I=1`, runs end on `Budget`).
-  Why `-ETIME` persists is the whole game now. PROGEV (with
-  live COUNT+MATCH per call, verified in linux204/205: single
-  TICKH, RPX all I=1, no BUG, klog frozen at 27 lines) shows the
-  expiry arg advancing +10M/call over the first loop calls, yet
-  the result never flips across 80k+ iterations. Current best
-  theory is a watchdog treadmill: consistent only if `now`
-  advances in lockstep — i.e. the active clocksource is
-  jiffies-driven (watchdog +1/slice plus `do_timer` +1/iteration)
-  and the expiry is recomputed as `now + C` with C <= 0 every
-  iteration. NEXT STEP: slow the watchdog to guest rate (+1 per
-  ~96 slices) and re-run — if the loop converges into periodic
-  ticks, confirmed; if not, the expiry base itself is stale and
-  `tick_next_period` must be planted.
+- The sched.c:4032 BUG_ON is GONE: root cause was our own cps
+  polarity inversion (second one — the first "fix" matched a swapped
+  objdump table). GAS-proven now: cpsie=0xF1080080, cpsid=0xF10C0080.
+  PREENT passes I=1/preempt=0 repeatedly. Frontier moved to
+  t≈1.48s: boot walks driver initcalls (smd, hw3d, H2W, ashmem,
+  yaffs, io scheduler), survives `mdp_init` (4 MMIO windows
+  stubbed: 0xE001/2/5/60000, table loop of 562 pairs), then the
+  1.48s idle spiral: "timer late, reprogram it" + "no smem clock"
+  repeat every idle entry (widened 128 KB log_buf dump proves it;
+  the 16 KB v2 dump looked frozen). Self-sustaining: each fbcon
+  render makes the next deadline late. WAIT/DONE completions all
+  pair (no kthread hang); SCHED activity continues past 91k
+  (uncapped run proved it). The CONDRV text tap proves the flush backlog (t=0.0s
+  messages still draining at f=82k); the widened 128 KB dump shows
+  the spiral tail. Root cause, proven 2026-10-24: (1) consecutive
+  PROGEV sampling + disassembly showed the passed expiry FROZEN
+  while now advanced +10M/call — the old plant bypassed
+  set_next_event, freezing dev->next_event; the +1-period lead in
+  the PROGEV mirror made program_event succeed FOR REAL (was_r0=0),
+  and with the plant removed the guest drives 10ms MATCH deltas
+  itself (klog 1.48→1.65s). (2) Deliveries then froze past f≈100k
+  with STATUS stuck: the 64-instruction poll counter provably
+  strides over default_idle's brief unmasked windows
+  (deterministic aliasing — WFI phase-locks every slice). Landed
+  2026-10-24: event-driven delivery (any unmask flags
+  irq_pendente, served at the next loop top) + dirty tracking +
+  livre-gated latch (masked evaluations must not consume the
+  one-shot edge) + wake-time delivery. Verified: nent 150→151,
+  unit tests for unmask-edge and wake-delivery. But the wall
+  persists: post-100k the guest stops unmasking, reprogramming
+  and scheduling entirely (ndes/nmas/SCHED/MATCH all frozen) —
+  parked in msleep inside mddi_init (SCHSTK#105) with a dead
+  timer wheel. Open: host-side periodic MATCH reprogram and/or
+  unmask to resuscitate, or find what the masked idle loop waits
+  for. Then retire the mirror/force nets + TEMP probes.
+- The first tick now COMPLETES (periodic ticks flow: klog
+  timestamps advance 1.39→1.47s, PREENT passes repeatedly,
+  schedule activity). The old `-ETIME` treadmill analysis below
+  belonged to the inverted-polarity era and is retired — the
+  host-side re-arm is gone too (plant removed 2026-10-24 once
+  program_event succeeded on its own; the guest programs its own
+  ~COUNT+327 matches now, TICKBRK only logs + forces r0=0 as a
+  no-op safety net).
 - The `genl_init`/`synchronize_rcu` park is BEHIND the tick:
   without a completing first tick there is no RCU progress at all
   (klog frozen at `console [tty0]`, 27 lines — the 61-line
@@ -352,7 +389,9 @@ Still open (2026-10-23 evening):
 - Live probes to retire on the fix: CPSIE/MSRIE/RETX/ENTRA,
   TICKBRK, BNE/EDGE/HIE/ACT/RESEND/DISPIRQ/VIDX, RPX, STIME/
   NINITCALL, DESCWR/DESCCHG, PROGEV, VICST (keep the model
-  plants + TIMERSTATE).
+  plants + TIMERSTATE). Retired 2026-10-24: PCSAMP (the Budget
+  stop now prints the parked pc + stack + pc history via
+  `imprime_trace`, which subsumes it).
 
 ## Stall after `neigh_init` (Dream, on hold behind the tick)
 

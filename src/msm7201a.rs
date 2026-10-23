@@ -975,6 +975,46 @@ impl Botoes {
     }
 }
 
+/// TEMP/RX work (host -> guest serial RX injection): keystroke queue
+/// plus the in-flight byte for the console UART.
+///
+/// The parked `Cmd>` shell (`0x88004BEC` -> line input `0x88004AAC` ->
+/// `getc` `0x88003FA0`) polls RX-ready = `[0xB2800008]` bit 0 and reads
+/// the byte from `[0xB280000C]` low byte (static decode of `0x88003FA0`;
+/// live-proven: planting ready+byte echoes the char). Real silicon clears
+/// the ready bit when the data register is read; the zeroed stub never
+/// does, so a consume trap (armed once at setup, `0x88004034`) clears it
+/// synchronously — otherwise the post-read re-check in `getc` sees a
+/// stuck-ready bit and rings the same byte until the ring fills
+/// (live-observed as an `h` flood: hundreds of echoes per plant). The
+/// per-slice Budget arm plants the next queued byte only while no byte is
+/// in flight and the ready bit is clear, so an idle run (empty queue)
+/// behaves exactly as before.
+#[cfg(any(test, target_arch = "wasm32", target_os = "ios", feature = "interpretador"))]
+static RX_FILA: std::sync::LazyLock<
+    std::sync::Mutex<(std::collections::VecDeque<u8>, Option<u8>)>,
+> = std::sync::LazyLock::new(|| {
+    std::sync::Mutex::new((std::collections::VecDeque::new(), None))
+});
+
+/// Queue one host keystroke byte for the guest `Cmd>` shell (printable
+/// `0x20..=0x7E`, `0x08` backspace, `0x0D` enter; anything else ignored).
+/// Frontends call this on host keypress (SDL text input); the harness
+/// plants queued bytes in order, one per guest `getc`. Runs with an empty
+/// queue behave exactly as before (no plant, consume trap never acts).
+#[cfg(any(test, target_arch = "wasm32", target_os = "ios", feature = "interpretador"))]
+pub fn rx_enfileira(byte: u8) {
+    if !(0x20..=0x7E).contains(&byte) && byte != 0x08 && byte != 0x0D {
+        return;
+    }
+    if let Ok(mut estado) = RX_FILA.lock() {
+        // Cap: a stuck guest must not grow the queue without bound.
+        if estado.0.len() < 64 {
+            estado.0.push_back(byte);
+        }
+    }
+}
+
 /// Serve one SD sector range from the card image, then skip the SDCC
 /// transfer (`r15 = lr`, nonzero `r0` = success: the callers `cmp r0,#0`
 /// + `beq fail`). Out-of-range requests are left alone so the guest
@@ -1003,10 +1043,10 @@ fn serve_setor_sd(
 }
 
 /// Halt traceback: what instruction stopped the run, decoded in place,
-/// plus the full register file. Printed once per fault stop (Budget
-/// exits are normal and stay quiet). This replaces bisecting a new
-/// crash one TEMP trap at a time: the faulting line, its neighbors,
-/// every register, CPSR (mode + I/F/T), and the last executed PCs.
+/// plus the full register file. Printed once per terminal stop,
+/// Budget included: stall runs end on Budget with no fault, and the
+/// parked pc + stack + pc history is exactly what names the stall
+/// (this replaces the PCSAMP/SCHSTK TEMP probes).
 #[cfg(any(test, target_arch = "wasm32", target_os = "ios", feature = "interpretador"))]
 fn imprime_trace(
     cpu: &crate::cpu::interpretador::Interpretador,
@@ -1197,20 +1237,21 @@ fn vic_nivel(mem: &GuestMemory) -> Option<u32> {
 }
 
 /// Delivery gate over [`vic_nivel`]: true only for a genuinely new
-/// edge, observed AT a delivery poll. The latch advances only when
-/// this returns true, so a non-delivering poll (I=1, or wrong
-/// 64-phase) can never consume the edge — the previous latch updated
-/// on every observation and did exactly that (one true-poll at I=1,
-/// then silence forever: zero VIDX in linux188 despite pending + I=0
-/// later). A 7->8 timer handover fires 8 without the level ever
-/// dropping.
+/// edge. `livre` must be true only when the caller will actually
+/// deliver (I==0 at the check): the MATCH one-shot advances ONLY on
+/// delivering evaluations. Advancing it on a masked observation
+/// consumes the edge without delivery — the 1.65s wall (live:
+/// ULTIMO tracked every new MATCH while nent stayed frozen,
+/// because masked WFI-block/64-poll evaluations ate each edge
+/// before an unmasked check could serve it). Level tracking
+/// (ULTIMA, incl. the None reset) still follows every observation.
 /// One-shot per MATCH value on top: a frozen MATCH (guest never
 /// reprograms after the first tick) can never refire, no matter how
 /// long COUNT stays past it — this is the nested-tick BUG killer
 /// (TICKH#2 186 slices after #1 with identical MATCH, I=0,
 /// BUG_ON). A genuine reprogram (new MATCH value) always re-arms,
 /// even if the level never dropped in between.
-fn deve_entregar(mem: &GuestMemory) -> bool {
+fn deve_entregar(mem: &GuestMemory, livre: bool) -> bool {
     static mut ULTIMA: Option<u32> = None;
     static mut ULTIMO_ALVO: u32 = 0;
     let nivel = vic_nivel(mem);
@@ -1226,10 +1267,20 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
         _ => u32::MAX,
     };
     unsafe {
-        match (nivel, ULTIMA) {
+        // TEMP (latch audit, armed by the harness at f >= 90000,
+        // cap 15): nent freezes past f≈100k while unmasks continue —
+        // log exactly why the gate stays shut (level, latch state,
+        // MATCH, result).
+        static mut NLA: u32 = 0;
+        let res = match (nivel, ULTIMA) {
             (Some(n), u) if u != Some(n) || alvo_atual != ULTIMO_ALVO => {
                 ULTIMA = Some(n);
-                ULTIMO_ALVO = alvo_atual;
+                // MATCH one-shot advances ONLY on delivering
+                // evaluations (livre): a masked observation must
+                // never consume the edge.
+                if livre {
+                    ULTIMO_ALVO = alvo_atual;
+                }
                 true
             }
             (None, _) => {
@@ -1237,9 +1288,30 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
                 false
             }
             _ => false,
+        };
+        if AUDIT_LATCH && NLA < 15 {
+            NLA += 1;
+            let n = NLA;
+            eprintln!("LATCH#{n} f={} nivel={nivel:?} alvo={alvo_atual:#x} res={res}", unsafe { FATIA_ATUAL });
         }
+        // Paradox trap: level HIGH but gate shut. Should be
+        // impossible (a fresh MATCH always differs from the last
+        // delivered one) — firing means the latch compares stale
+        // state. Cap 10, same gate.
+        static mut NPAR: u32 = 0;
+        if AUDIT_LATCH && unsafe { FATIA_ATUAL } >= 100000 && matches!(nivel, Some(_)) && !res && NPAR < 200 {
+            NPAR += 1;
+            let n = NPAR;
+            let (u_copia, alv_copia) = unsafe { (ULTIMA, ULTIMO_ALVO) };
+            eprintln!("PARADOX#{n} f={} nivel={nivel:?} alvo={alvo_atual:#x} ultima={u_copia:?} ultimo={alv_copia:#x}", unsafe { FATIA_ATUAL });
+        }
+        res
     }
 }
+
+/// Armed by the per-slice harness at f >= 90000: start the latch
+/// audit above. (A plain bool; the harness owns the slice clock.)
+pub static mut AUDIT_LATCH: bool = false;
 
     let mut mem = monta_mapa_inicial(&spl).unwrap();
     mem.map_zeroed("sonda_fria", 0x01f6_a000, 0x1000).unwrap();
@@ -1274,6 +1346,20 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
     // in `trout_init_cpldshadow`, write-only, no readback).
     // Pre-mapped: stub-safe per both static analyses.
     mem.map_zeroed("kernel_e810_stub", 0xE810_0000, 0x1000).unwrap();
+    // MDP display controller (`0xE0010000` + `0xE0020000`, trout static
+    // IO map; first hit 2026-10-23: `mdp_init` str at 0xC011C110 to
+    // [0xE0010060], then [r0=0xE0020000+0x1F8]). Zeroed 64 KiB stubs
+    // (RAM semantics). Display output is future work (see §MDP note);
+    // if mdp_init spins on a status bit, plant it then.
+    mem.map_zeroed("mdp_a_stub", 0xE001_0000, 0x1_0000).unwrap();
+    mem.map_zeroed("mdp_b_stub", 0xE002_0000, 0x1_0000).unwrap();
+    // MDP register table block (`0xE0050000`, 562 (addr,val) pairs in
+    // `mdp_init`'s table loop at 0xC011C128; first hit 2026-10-23:
+    // str to [0xE0050400]). Zeroed 64 KiB stub, same terms as above.
+    mem.map_zeroed("mdp_c_stub", 0xE005_0000, 0x1_0000).unwrap();
+    // Sibling MDP/MDDI window (`0xE0060000`; first hit 2026-10-23:
+    // str to [0xE006FFFC] from `mdp_init` at 0xC011C198). Same stub.
+    mem.map_zeroed("mdp_d_stub", 0xE006_0000, 0x1_0000).unwrap();
     // ARM exception vectors (`0xFFFF0000`, high vectors): the kernel
     // reads/copies its stubs there during trap setup (first seen as
     // a read with r0=0xFFFF0000). Zeroed page; the guest fills it.
@@ -1416,6 +1502,27 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
     // (direct-TX); with `+20 == 0` it re-enqueues forever. Real silicon
     // raises it when TX completes; the stub models "always complete".
     cpu.write_u32(0xB280_0014, 1).unwrap();
+    // TEMP/RX work (see `rx_enfileira`): clear RX-ready synchronously when
+    // `getc` loads the data byte (`ldr r3,[r4,#0xC]` at `0x88004034`,
+    // `r4` = UART MMIO base). Acts only while a planted byte is in
+    // flight, and only on the console UART — any other reader keeps stub
+    // behavior. Without this the post-read re-check in `getc`
+    // (`0x8800403C..44`) sees the stuck-ready bit and rings the same byte
+    // until the ring fills (one plant -> hundreds of echoes, measured).
+    cpu.trap_pc_mem(0x8800_4034, move |mem, regs| {
+        if regs[4] != 0xB280_0000 {
+            return;
+        }
+        if let Ok(mut estado) = RX_FILA.lock() {
+            let Some(b) = estado.1.take() else {
+                return;
+            };
+            if let Ok(v) = mem.read_u32(0xB280_0008) {
+                let _ = mem.write_u32(0xB280_0008, v & !1);
+            }
+            eprintln!("RXCONSUME byte={b:#x}");
+        }
+    });
     let mut pc = cpu.read_reg(crate::cpu::Reg::Pc);
     pc = if cpu.em_thumb() { pc | 1 } else { pc & !1 };
     let tap = std::rc::Rc::new(std::cell::RefCell::new(
@@ -1903,10 +2010,14 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
     });
     // TEMP (idle?): schedule() entry — who schedules what, and the
     // timer state (0xC02A43EC gate + GPT MATCH/COUNT/ENABLE).
+    // Stall tail (100th+ switch, f≈91300): dump 48 words at sp —
+    // the outgoing task's park chain (unwind offline via kallsyms).
+    // Cap 400 + 8 dumps (the stall leaves no switches after #107).
     cpu.trap_pc_mem(0xC021_2A08, move |mem, regs| {
         static mut N: u32 = 0;
+        static mut ND: u32 = 0;
         unsafe {
-            if N < 40 {
+            if N < 400 {
                 N += 1;
                 let n = N;
                 let ti = regs[13] & !0x1FFF;
@@ -1916,6 +2027,14 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
                 let c = mem.read_u32(0xE000_1004).unwrap_or(0xDEAD);
                 let e = mem.read_u32(0xE000_1008).unwrap_or(0xDEAD);
                 eprintln!("SCHED#{n} f={} ti={ti:#x} flags={flags:#x} gate={gate:#x} MATCH={m:#x} COUNT={c:#x} EN={e:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[14]);
+                if n >= 100 && ND < 8 {
+                    ND += 1;
+                    let mut st = [0u32; 48];
+                    for (i, s) in st.iter_mut().enumerate() {
+                        *s = mem.read_u32(regs[13].wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
+                    }
+                    eprintln!("SCHSTK#{n} f={} sp={:#x} stk={st:#x?}", unsafe { FATIA_ATUAL }, regs[13]);
+                }
             }
         }
     });
@@ -1972,12 +2091,14 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
         }
     });
     // creation; the switch consumes when the frame's fn slot is zeroed.
+    // Late-window view (f >= 80000, cap 16): the 1.48s stall hangs
+    // in kthread_create — which fn never starts?
     cpu.trap_pc_mem(0xC002_2614, move |_mem, regs| {
         static mut N: u32 = 0;
         unsafe {
             // FIFO embedded in the counter: only logs (order is
             // kernel_init, kthreadd, ...; the switch uses the counter).
-            if N < 8 {
+            if unsafe { FATIA_ATUAL } >= 80000 && N < 24 {
                 N += 1;
                 eprintln!("KTHREAD f={} fn={:#x} arg={:#x} flags={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[1], regs[2]);
             }
@@ -2027,8 +2148,57 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
             }
         }
     });
-    // TEMP (F call site): who calls 0xC00219D0 and with what
-    // args/stack. One shot.
+    // TEMP (completion waiter/waker 0xC021335C/0xC0040228): the 1.48s
+    // stall parks init in kthread_create->wait_for_completion. Log
+    // every waiter (completion addr + task) and every waker
+    // (completion addr). A waiter with no matching waker = the hang.
+    // Cap 30 each, gate f >= 80000 (boot noise before).
+    cpu.trap_pc_mem(0xC021_335C, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if unsafe { FATIA_ATUAL } >= 80000 && N < 300 {
+                N += 1;
+                let n = N;
+                let ti = regs[13] & !0x1FFF;
+                let task = mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
+                eprintln!("WAIT#{n} f={} compl={:#x} task={:#x} ti={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], task, ti, regs[14]);
+            }
+        }
+    });
+    cpu.trap_pc_mem(0xC004_0228, move |_mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if unsafe { FATIA_ATUAL } >= 80000 && N < 300 {
+                N += 1;
+                let n = N;
+                eprintln!("DONE#{n} f={} compl={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[14]);
+            }
+        }
+    });
+    // TEMP (console driver call 0xC0046A14): release_console_sem
+    // calls the drivers via BL at 0xC0046C84. Dump the message text
+    // (r0=start, r1=end indices into __log_buf at 0xC02C9000) to see
+    // whether late output is new boot text or a repeating storm.
+    // Cap 12, gate f >= 80000.
+    cpu.trap_pc_mem(0xC004_6A14, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if unsafe { FATIA_ATUAL } >= 80000 && N < 12 {
+                N += 1;
+                let n = N;
+                let ini = regs[0] as usize;
+                let fim = regs[1] as usize;
+                let nbytes = fim.saturating_sub(ini).min(256);
+                // LOG_BUF_MASK is 0x1FFFF (128 KB ring).
+                let base = 0xC02C_9000u32.wrapping_add((ini & 0x1_FFFF) as u32);
+                let s = match mem.read(base, nbytes as u32) {
+                    Ok(b) => String::from_utf8_lossy(b).into_owned(),
+                    Err(_) => "<unmapped>".to_string(),
+                };
+                eprintln!("CONDRV#{n} f={} [{ini:#x}..{fim:#x}] msg={s:?}", unsafe { FATIA_ATUAL });
+            }
+        }
+    });
     cpu.trap_pc_mem(0xC021_2D98, move |mem, regs| {
         static mut N: u32 = 0;
         unsafe {
@@ -2254,10 +2424,34 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
     });
     // TEMP (vector index): lr (=SPSR&15, guest mode) + target.
     // Decides between SVC(3)->0xC00215E0, USR(0), SYS(15)->???.
+    // Gated to the preempt-BUG window (f >= 84000): are there any
+    // vector entries at all near the fault, or is the dispatch
+    // path entered without one?
+    // TEMP (vector entry stack 0xFFFF0018 = IRQ vector): dump 8 words
+    // of the IRQ stack on vector entry (pc+lr chain shows what was
+    // interrupted vs what jumped here). A real delivery interrupts
+    // live code; a spurious in-guest jump shows a foreign context.
+    // (Was on 0x1C = FIQ vector: never fired. Fixed 2026-10-23.)
+    // Gated to the fault window (f >= 84000, cap 20): an ungated
+    // cap would be consumed by boot vectors.
+    cpu.trap_pc_mem(0xFFFF_0018, move |mem, regs| {
+        static mut NV: u32 = 0;
+        unsafe {
+            if unsafe { FATIA_ATUAL } >= 84000 && NV < 20 {
+                NV += 1;
+                let n = NV;
+                let mut st = [0u32; 8];
+                for (i, s) in st.iter_mut().enumerate() {
+                    *s = mem.read_u32(regs[13].wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
+                }
+                eprintln!("VECSTK#{n} f={} sp={:#x} stk={st:#x?}", unsafe { FATIA_ATUAL }, regs[13]);
+            }
+        }
+    });
     cpu.trap_pc_mem(0xFFFF_0224, move |mem, regs| {
         static mut N: u32 = 0;
         unsafe {
-            if N < 3 {
+            if unsafe { FATIA_ATUAL } >= 84000 && N < 20 {
                 N += 1;
                 let n = N;
                 let idx = regs[14] & 15;
@@ -2266,11 +2460,11 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
             }
         }
     });
-    // r5 (VIC base) is valid? Cap 2 + 96B.
+    // r5 (VIC base) is valid? Cap 8 + 96B, gated to the fault window.
     cpu.trap_pc_mem(0xC002_15E0, move |mem, regs| {
         static mut N: u32 = 0;
         unsafe {
-            if N < 8 {
+            if unsafe { FATIA_ATUAL } >= 84000 && N < 20 {
                 N += 1;
                 let n = N;
                 let mut c = vec![0u8; 96];
@@ -2299,7 +2493,140 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
             }
         });
     }
-    // TEMP (post-neigh_init entries): did the init thread reach
+    // TEMP (alarm path 0xC002ACD8/0xC002ABAC): does reactivate_alarm
+    // still run post-wall, and does it reach set_next_event? MATCH
+    // is frozen while the idle loop spins — if the alarm never
+    // fires, nobody reprograms. Cap 10 each, gate f >= 100000.
+    cpu.trap_pc_mem(0xC002_ACD8, move |_mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if unsafe { FATIA_ATUAL } >= 100000 && N < 10 {
+                N += 1;
+                let n = N;
+                eprintln!("REACT#{n} f={} lr={:#x}", unsafe { FATIA_ATUAL }, regs[14]);
+            }
+        }
+    });
+    cpu.trap_pc_mem(0xC002_ABAC, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if unsafe { FATIA_ATUAL } >= 100000 && N < 10 {
+                N += 1;
+                let n = N;
+                let tc = mem.read_u32(0xE000_1004).unwrap_or(0xDEAD);
+                eprintln!("SETNX2#{n} f={} r0={:#x} r1={:#x} COUNT={tc:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[1], regs[14]);
+            }
+        }
+    });
+    // TEMP (set_next_event args 0xC002AC08): all tick-path MATCH
+    // writes funnel here (shared by tick and alarm paths). Log delta arg + caller
+    // to see who programs stale/zero-lead values (the wall: MATCH
+    // stuck <= COUNT, level never drops, edge never fires while
+    // unmasked checks see fresh MATCH). Re-gated f >= 100000, cap 20
+    // (the wall era — earlier cap died in the transition).
+    cpu.trap_pc_mem(0xC002_AC08, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if unsafe { FATIA_ATUAL } >= 100000 && N < 20 {
+                N += 1;
+                let n = N;
+                let tc = mem.read_u32(0xE000_1004).unwrap_or(0xDEAD);
+                let tm = mem.read_u32(0xE000_1000).unwrap_or(0xDEAD);
+                eprintln!("SETNX#{n} f={} r0={:#x} r1={:#x} COUNT={tc:#x} MATCH={tm:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[1], regs[14]);
+            }
+        }
+    });
+    // TEMP (spam skip 0xC0047610): the 1.65s wall is a printk-fueled
+    // deadlock — every idle entry prints "timer late" + "no smem
+    // clock" (masked console flush with fbcon render costs more
+    // than the entry period, so the ISR starves, the wheel freezes,
+    // deadlines stay stale, every entry stays late). Skip exactly
+    // these two formats (regs[15]=lr returns immediately): "late"
+    // self-retires once deadlines heal; "smem" stays until the
+    // modem SMEM is modeled. Logs the first 5 skips. All other
+    // printks run normally.
+    cpu.trap_pc_mem(0xC004_7610, move |mem, regs| {
+        static mut NSK: u32 = 0;
+        unsafe {
+            if let Ok(fmt) = mem.read(regs[0], 80) {
+                let s = String::from_utf8_lossy(fmt);
+                if s.contains("timer late") || s.contains("no smem clock") {
+                    if NSK < 5 {
+                        NSK += 1;
+                        let n = NSK;
+                        eprintln!("SKIPMSG#{n} f={} fmt={:?}", unsafe { FATIA_ATUAL }, &s[..s.len().min(60)]);
+                    }
+                    regs[15] = regs[14];
+                    regs[0] = 0;
+                }
+            }
+        }
+    });
+    // TEMP (enter_idle check 0xC002B28C): msm_timer_enter_idle
+    // returns immediately unless [0xC02C1C38] == [0xC02A43C0].
+    // If mismatched forever, it never reprograms MATCH (frozen
+    // since ~91k) — log both sides + COUNT. Cap 5.
+    cpu.trap_pc_mem(0xC002_B28C, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 5 {
+                N += 1;
+                let n = N;
+                let r4 = regs[4];
+                let dev0 = mem.read_u32(0xC02A_43C0).unwrap_or(0xDEAD);
+                let tc = mem.read_u32(0xE000_1004).unwrap_or(0xDEAD);
+                eprintln!("EIDLE#{n} f={} r4={:#x} [dev]={dev0:#x} eq={} COUNT={tc:#x}", unsafe { FATIA_ATUAL }, regs[4], r4 == dev0);
+            }
+        }
+    });
+    // TEMP (nohz entry 0xC0065628): tick_nohz_stop_idle — who calls,
+    // how often past the wall. If entered but never returned (no
+    // exit log), the guest sleeps tickless with no wakeup. Cap 20,
+    // gate f >= 90000.
+    cpu.trap_pc_mem(0xC006_5628, move |_mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if unsafe { FATIA_ATUAL } >= 90000 && N < 20 {
+                N += 1;
+                let n = N;
+                eprintln!("NOHZ#{n} f={} lr={:#x} sp={:#x}", unsafe { FATIA_ATUAL }, regs[14], regs[13]);
+            }
+        }
+    });
+    // scan increments r5 per byte looking for '\n'; the r5==r7
+    // termination check sits outside the inner loop. If r5 runs past
+    // TEMP (flush runaway 0xC0046C50): release_console_sem's inner
+    // scan increments r5 per byte looking for '\n'; the r5==r7
+    // reaches the drivers or the check — masked spin forever. Log
+    // the first 5 runaways (r5, r7). Never firing kills this theory.
+    cpu.trap_pc_mem(0xC004_6C50, move |_mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if regs[5] > regs[7] && N < 5 {
+                N += 1;
+                let n = N;
+                eprintln!("RUNAWAY#{n} f={} r5={:#x} r7={:#x}", unsafe { FATIA_ATUAL }, regs[5], regs[7]);
+            }
+        }
+    });
+    // TEMP (idle lateness 0xC002B2A4): msm_timer_enter_idle computes
+    // r5 = wakeup - now and prints "late" when behind. Sample the
+    // read result (r0 = msm_read_timer_count) + wakeup slot
+    // ([[r4+0xC8]]) to see which side is frozen. Cap 12, gate
+    // f >= 80000 (idle starts late-boot).
+    cpu.trap_pc_mem(0xC002_B2A4, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if unsafe { FATIA_ATUAL } >= 80000 && N < 12 {
+                N += 1;
+                let n = N;
+                let r4 = regs[4];
+                let slot = mem.read_u32(r4.wrapping_add(0xC8)).unwrap_or(0xDEAD);
+                let wake = mem.read_u32(slot).unwrap_or(0xDEAD);
+                eprintln!("LATE#{n} f={} now={:#x} slot={slot:#x} wake={wake:#x}", unsafe { FATIA_ATUAL }, regs[0]);
+            }
+        }
+    });
     // genl_init and friends? klog stops after neigh_init returns
     // (0xC0018FE4) with genl_init (0xC0019348) never logging.
     // Entry-fire (cap 2 each) separates "never called" (parked in
@@ -2511,6 +2838,62 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
     // call (r4 = action, r0 = irq, r1 = dev_id). Single VIDX but
     // double TICKH means the chain runs the timer handler twice in
     // one dispatch — or two actions share the IRQ. Cap 8.
+    // TEMP (preempt BUG entry 0xC0212EF8): the sched.c:4032 BUG_ON
+    // fires when (preempt_count != 0) OR (I == 0). Log CPSR snapshot
+    // (r3, from the mrs) + [ti+4] preempt count (ti in r5) + caller.
+    // Distinguishes an IRQs-on entry from a corrupted count. Cap 4.
+    cpu.trap_pc_mem(0xC021_2EF8, move |mem, regs| {
+        static mut NPB: u32 = 0;
+        unsafe {
+            if NPB < 4 {
+                NPB += 1;
+                let n = NPB;
+                let ti = regs[5] & !0x1FFF;
+                let pcnt = mem.read_u32(ti.wrapping_add(4)).unwrap_or(0xDEAD);
+                eprintln!("PREBUG#{n} f={} cpsr={:#x} I={} preempt={:#x} ti={ti:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[3], (regs[3] >> 7) & 1, pcnt, regs[14]);
+            }
+        }
+    });
+    // call (r4 = action, r0 = irq, r1 = dev_id). Single VIDX but
+    // double TICKH means the chain runs the timer handler twice in
+    // one dispatch — or two actions share the IRQ. Cap 8.
+    // TEMP (preempt entry 0xC0212EEC): log CPSR snapshot (r3, just
+    // mrs'd) + [ti+4] preempt count (ti in r5) + caller, on EVERY
+    // preempt_schedule_irq entry. The sched.c:4032 BUG fires when
+    // (count != 0) or (I == 0); this shows which one, and what the
+    // healthy entries look like. Cap 8.
+    cpu.trap_pc_mem(0xC021_2EEC, move |mem, regs| {
+        static mut NPEE: u32 = 0;
+        unsafe {
+            if NPEE < 8 {
+                NPEE += 1;
+                let n = NPEE;
+                let ti = regs[5] & !0x1FFF;
+                let pcnt = mem.read_u32(ti.wrapping_add(4)).unwrap_or(0xDEAD);
+                eprintln!("PREENT#{n} f={} cpsr={:#x} I={} preempt={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[3], (regs[3] >> 7) & 1, pcnt, regs[14]);
+            }
+        }
+    });
+    // call (r4 = action, r0 = irq, r1 = dev_id). Single VIDX but
+    // double TICKH means the chain runs the timer handler twice in
+    // one dispatch — or two actions share the IRQ. Cap 8.
+    // TEMP (svc_preempt entry 0xC002166C): who calls it (lr) + r8
+    // (the teq operand: nonzero skips everything). No static BL/B
+    // caller exists in the image, so the invoker arrives by
+    // fall-through or computed jump — lr names it. Cap 4.
+    cpu.trap_pc_mem(0xC002_166C, move |_mem, regs| {
+        static mut NSV: u32 = 0;
+        unsafe {
+            if NSV < 4 {
+                NSV += 1;
+                let n = NSV;
+                eprintln!("SVCPRE#{n} f={} r8={:#x} lr={:#x} sp={:#x}", unsafe { FATIA_ATUAL }, regs[8], regs[14], regs[13]);
+            }
+        }
+    });
+    // call (r4 = action, r0 = irq, r1 = dev_id). Single VIDX but
+    // double TICKH means the chain runs the timer handler twice in
+    // one dispatch — or two actions share the IRQ. Cap 8.
     // TEMP (IRQ action walk 0xC006EDAC): log every action->handler
     // call (r4 = action, r0 = irq, r1 = dev_id). Single VIDX but
     // double TICKH means the chain runs the timer handler twice in
@@ -2528,20 +2911,59 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
         }
     });
     // TEMP (program_event args 0xC0064814): log entry args (r0-r3)
-    // + caller + live COUNT/MATCH. Decides whether the -ETIME loop
-    // is a stale expiry (args frozen across calls) or a racing now
-    // (COUNT outruns the freshly computed MATCH). Cap 6.
+    // + caller + live COUNT/MATCH + fail-latch flag + jiffies.
+    // Cap 6 + every 20000th: the loop runs hundreds of thousands
+    // of iterations and the first calls can't show whether the
+    // expiry keeps accumulating or resets. r2 trajectory + FLAG
+    // decides stale-base vs racing-now.
+    // EXTENDED 2026-10-24: consecutive window n<=30 — the
+    // disassembly advances next by [0xC02EAA48] every retry, yet the
+    // 20000th samples look frozen. Consecutive r2 decides whether
+    // next churns +10M/call (now must race ahead) or sits still
+    // ([AA48] zeroed/stale).
     cpu.trap_pc_mem(0xC006_4814, move |mem, regs| {
         static mut NPE: u32 = 0;
         unsafe {
-            if NPE < 6 {
-                NPE += 1;
-                let n = NPE;
+            NPE += 1;
+            let n = NPE;
+            if n <= 30 || n % 20000 == 0 {
                 let s0 = mem.read_u32(regs[13]).unwrap_or(0xDEAD);
                 let s1 = mem.read_u32(regs[13].wrapping_add(4)).unwrap_or(0xDEAD);
                 let tc = mem.read_u32(0xE000_1004).unwrap_or(0xDEAD);
                 let tm = mem.read_u32(0xE000_1000).unwrap_or(0xDEAD);
-                eprintln!("PROGEV#{n} f={} r0={:#x} r1={:#x} r2={:#x} r3={:#x} [sp]={s0:#x}+{s1:#x} COUNT={tc:#x} MATCH={tm:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[1], regs[2], regs[3], regs[14]);
+                let fl = mem.read_u32(0xC02E_AA28).unwrap_or(0xDEAD);
+                let jf = mem.read_u32(0xC02A_B638).unwrap_or(0xDEAD);
+                let g0 = mem.read_u32(0xC02E_AA48).unwrap_or(0xDEAD);
+                let g1 = mem.read_u32(0xC02E_AA48 + 4).unwrap_or(0xDEAD);
+                eprintln!("PROGEV#{n} f={} r0={:#x} r1={:#x} r2={:#x} r3={:#x} [sp]={s0:#x}+{s1:#x} COUNT={tc:#x} MATCH={tm:#x} FLAG={fl:#x} jif={jf:#x} GLOB={g1:#x}{g0:08x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[1], regs[2], regs[3], regs[14]);
+            }
+            // Keep the clockevent device state consistent with the
+            // forced success below (TICKBRK): the host plant writes
+            // MATCH directly, bypassing set_next_event, so
+            // dev->next_event (dev+0x40, 8 bytes — the ldrd slot the
+            // tick loop re-reads every invocation) freezes in the
+            // past and every deadline, incl. idle's, computes late.
+            // Mirror a successful programming: next_event = passed
+            // expiry (r2/r3) PLUS one tick period (0x989680) of lead.
+            // The lead is load-bearing: now advances a whole jiffy
+            // per processed tick (jiffy-quantized ktime, no
+            // clocksource), so parity E == now never breaks without
+            // it; +10M lead makes delta positive and program_event
+            // succeed for real. Arithmetic mimics the guest's own
+            // normalization (low < 1e9 invariant via the 2^32-1e9
+            // wrap). Uncapped: runs on every call, logs stay sampled
+            // above.
+            {
+                let dev = regs[0];
+                let (mut nl, mut nh) = (regs[2].wrapping_add(0x989680), regs[3]);
+                nh = nh.wrapping_add((nl < regs[2]) as u32);
+                if nl >= 0x3B9A_CA00 {
+                    let (w, c) = nl.overflowing_add(0xC465_3600);
+                    nl = w;
+                    nh = nh.wrapping_add(c as u32);
+                }
+                let _ = mem.write_u32(dev.wrapping_add(0x40), nl);
+                let _ = mem.write_u32(dev.wrapping_add(0x44), nh);
             }
         }
     });
@@ -2562,21 +2984,24 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
             }
         }
     });
-    // TEMP (tick catch-up breaker 0xC0065164): OBSERVE ONLY for now
-    // (forcing disabled 2026-10-23 — testing whether paced COUNT lets
-    // clockevents_program_event succeed on its own; a forced r0=0
-    // masks the guest's real -ETIME reasoning and freezes MATCH).
-    // If was_r0 keeps coming back -ETIME, the delta computation
-    // itself is stale (tick_next_period) and that is the next plant.
-    cpu.trap_pc_mem(0xC006_5164, move |_mem, regs| {
+    // TEMP (tick re-arm 0xC0065164): the +1-period lead in the
+    // PROGEV mirror (2026-10-24) made program_event succeed for
+    // real (was_r0=0 from the 2nd call on) — the MATCH plant is now
+    // REMOVED so the guest's own set_next_event drives the
+    // hardware (expect ~COUNT+327, 10ms ticks). regs[0]=0 stays as
+    // a no-op safety net (success already returns 0) + logging.
+    cpu.trap_pc_mem(0xC006_5164, move |mem, regs| {
         static mut NBR: u32 = 0;
         unsafe {
             NBR += 1;
             let n = NBR;
-            if n <= 3 || n % 20000 == 0 {
-                eprintln!("TICKBRK#{n} f={} was_r0={:#x} (observe-only, no force)", unsafe { FATIA_ATUAL }, regs[0]);
+            if n <= 10 || n % 20000 == 0 {
+                let tm = mem.read_u32(0xE000_1000).unwrap_or(0xDEAD);
+                let tc = mem.read_u32(0xE000_1004).unwrap_or(0xDEAD);
+                eprintln!("TICKBRK#{n} f={} was_r0={:#x} MATCH={tm:#x} COUNT={tc:#x} (plant removed, guest-driven)", unsafe { FATIA_ATUAL }, regs[0]);
             }
         }
+        regs[0] = 0;
     });
     cpu.trap_pc_mem(0xC004_0394, move |_mem, regs| {
         static mut NST: u32 = 0;
@@ -2716,7 +3141,7 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
     // function of guest-visible device state, so the CPU can poll it
     // between instructions; the kernel's ack (MATCH reprogram)
     // drops it inside the same slice.
-    cpu.set_fonte_irq(|mem| deve_entregar(mem));
+    cpu.set_fonte_irq(|mem, livre| deve_entregar(mem, livre));
     // get_irqnr_and_base (entry-macro.S, both __irq_svc and __irq_usr
     // copies in this vmlinux): `ldr r0,[r5,#0xD0]; ldr r0,[r5,#0xD4];
     // cmn r0,#1` -> plant the pending IRQ number right before the D4
@@ -2942,6 +3367,9 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
     let mut mapeadas_kern: Vec<u32> = Vec::new();
     // Host frame hook watermarks: serial bytes already handed out.
     let mut tap_marca = 0usize;
+    // TEMP/RX work: separate watermark for tap channel 0 (line-input
+    // echoes; see the `novos` assembly below).
+    let mut tap_marca_c0 = 0usize;
     let mut saida_marca = 0usize;
     // Slice count and size used to be hardcoded (200k x 2k: the
     // post-wlan phase is straight-line silent init, hundreds of
@@ -3186,7 +3614,35 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
                     if let Ok(v) = cpu.read_u32(0xB1D0_0018) {
                         let _ = cpu.write_u32(0xB1D0_0018, v | 0x8000);
                     }
-                    // (exact VIC SET/CLEAR live in es_mem, per write.)
+                    // TEMP (forced unmask, one-shot at f=100000): the wall is
+                    // a masked idle with no unmask path executing. Clear I
+                    // once and see if ticks/ISR/reprogram resume (which
+                    // would prove masking is the whole wall vs deeper
+                    // breakage). Logs loudly.
+                    if fatia == 100000 {
+                        let (_, cpsr_antes, _, _) = cpu.estado_completo();
+                        cpu.set_cpsr(cpsr_antes & !0x80);
+                        eprintln!("FORCA-IRQ f={fatia} cpsr {cpsr_antes:#x} -> {:#x}", cpsr_antes & !0x80);
+                    }
+                    // the post-wall loop (if any) needs fine granularity
+                    // to show repetition vs linear walk. Cap 400
+                    // (covers f=90k..170k).
+                    if fatia >= 90000 && fatia % 200 == 0 {
+                        static mut NH: u32 = 0;
+                        unsafe {
+                            if NH < 400 {
+                                NH += 1;
+                                let n = NH;
+                                eprintln!("PCS#{n} f={fatia} pc={:#x}", cpu.read_reg(crate::cpu::Reg::Pc));
+                            }
+                        }
+                    }
+                    // Arm the latch audit once past the delivery wall.
+                    if fatia >= 90000 {
+                        unsafe {
+                            AUDIT_LATCH = true;
+                        }
+                    }
                     // TIMERSTATE (every 20k slices): EN_SET/EN_CLEAR/
                     // STATUS/MATCH/COUNT/EN + gate + jiffies + current
                     // task — tick AND progress diagnostics.
@@ -3211,7 +3667,53 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
                         let (_, cpsr_snap, _, _) = cpu.estado_completo();
                         let ibit = (cpsr_snap >> 7) & 1;
                         let modo = cpsr_snap & 0x1F;
-                        eprintln!("TIMERSTATE f={fatia} ENSET30={e30:#x} ENCLR20={e20:#x} STATUS80={e80:#x} MATCH={tm:#x} COUNT={tc:#x} EN={te:#x} DMATCH={dm:#x} DCOUNT={dc:#x} gate={tg:#x} jiffies={jf:#x} task={task:#x} I={ibit} modo={modo:#x}");
+                        // Total deliveries so far: the per-delivery logs
+                        // are gated/capped, this shows the true rate.
+                        let nent = unsafe { crate::cpu::interpretador::ULTIMA_ENTREGA };
+                        // Unmask/mask edges since reset (see TOTAL_DESMASCA /
+                        // TOTAL_MASCARA): unmasks without deliveries =
+                        // line/edge gate blocks; neither moving at all =
+                        // I=1 held (or the tracking diverged).
+                        let ndes = unsafe { crate::cpu::interpretador::TOTAL_DESMASCA };
+                        let nmas = unsafe { crate::cpu::interpretador::TOTAL_MASCARA };
+                        let nwfi: u32 = unsafe { crate::cpu::interpretador::TOTAL_WFI };
+                        // Foreground pc: where the guest is parked at the
+                        // slice boundary (stall diagnosis — the irq-stack
+                        // ti above goes garbage in interrupt context).
+                        let fpc = cpu.read_reg(crate::cpu::Reg::Pc);
+                        // Live stack (8 words at sp): stuck-in-one-frame
+                        // vs slow-work distinguisher. The post-91k wall
+                        // shows varied fpc with zero lock/sched/timer
+                        // activity — a static stack names the spin.
+                        // Plus the two parked thread stacks (init 0xC6016000
+                        // + kthreadd 0xC601E000, 16 words each, kernel-text
+                        // only): names what the sleepers wait in.
+                        let mut stk8 = [0u32; 8];
+                        let spsnap = cpu.read_reg(crate::cpu::Reg::Sp);
+                        for (i, s) in stk8.iter_mut().enumerate() {
+                            *s = cpu.read_u32(spsnap.wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
+                        }
+                        let mut park: [u32; 12] = [0xDEAD; 12];
+                        {
+                            let mut k = 0usize;
+                            for base in [0xC601_6000u32, 0xC601_E000u32] {
+                                // Stacks grow DOWN: low addresses hold the
+                                // newest (deepest) frames first. Collect
+                                // kernel-text words in address order.
+                                for w in 0..2048u32 {
+                                    if k >= park.len() {
+                                        break;
+                                    }
+                                    if let Ok(v) = cpu.read_u32(base.wrapping_add(w * 4)) {
+                                        if (0xC000_0000..0xD000_0000).contains(&v) && v & 3 == 0 {
+                                            park[k] = v;
+                                            k += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        eprintln!("TIMERSTATE f={fatia} ENSET30={e30:#x} ENCLR20={e20:#x} STATUS80={e80:#x} MATCH={tm:#x} COUNT={tc:#x} EN={te:#x} DMATCH={dm:#x} DCOUNT={dc:#x} gate={tg:#x} jiffies={jf:#x} task={task:#x} I={ibit} modo={modo:#x} nent={nent} ndes={ndes} nmas={nmas} nwfi={nwfi} fpc={fpc:#x} stk={stk8:#x?} park={park:#x?}");
                         // TEMP (desc watch): dump 8 words at 0xC02A4468
                         // (the irq_desc/action the dispatch uses) on
                         // CHANGE, cap 10. Names who sets PENDING / moves
@@ -3267,6 +3769,33 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
                     for base in [0xB280_0014u32, 0xB260_0014u32] {
                         if let Ok(v) = cpu.read_u32(base) {
                             let _ = cpu.write_u32(base, v | 1);
+                        }
+                    }
+                    // TEMP/RX work (see `rx_enfileira`): plant the next
+                    // queued keystroke while the console UART shows no
+                    // pending byte (ready bit clear, nothing in flight).
+                    // Ready = `[0xB2800008]` bit 0, data = `[0xB280000C]`
+                    // low byte; error bits `0x20`/`0x40` mean "discard" to
+                    // `getc`, so they are cleared on the plant while the
+                    // guest's other status bits are preserved.
+                    if let Ok(mut estado) = RX_FILA.lock() {
+                        if estado.1.is_none() {
+                            if let Ok(st) = cpu.read_u32(0xB280_0008) {
+                                if st & 1 == 0 {
+                                    if let Some(b) = estado.0.pop_front() {
+                                        estado.1 = Some(b);
+                                        let _ =
+                                            cpu.write_u32(0xB280_0008, (st | 1) & !0x60);
+                                        if let Ok(d) = cpu.read_u32(0xB280_000C) {
+                                            let _ = cpu.write_u32(
+                                                0xB280_000C,
+                                                (d & !0xFF) | b as u32,
+                                            );
+                                        }
+                                        eprintln!("RXPLANT byte={b:#x}");
+                                    }
+                                }
+                            }
                         }
                     }
                     // UART command ACK, phase 1 (decoded `0x88004180`
@@ -3396,6 +3925,12 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
                             depois |= 0x100;
                         }
                         let _ = cpu.write_u32(0xE000_0080, depois);
+                        // STATUS rising edge (catch-up birth): mark timer
+                        // dirty so the next UNMASKED loop top rechecks
+                        // (persists across masked stretches).
+                        if !antes && (depois & 0x180) != 0 {
+                            cpu.marca_timer_sujo();
+                        }
                         // Tick completed: a STATUS bit was set and cleared
                         // itself via guest ack + MATCH reprogram while
                         // enabled. One jiffy per real tick (either timer).
@@ -3407,12 +3942,20 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
                             ultimo_tick = Some(fatia);
                         }
                     }
-                    // Watchdog fallback: +1/slice unless a tick
-                    // completed recently. Keeps calibrate_delay and
-                    // unsticks jiffies waits when ticks stop
-                    // (I=1, one-shot without rearming).
+                    // Watchdog fallback: +1 per 96 slices unless a tick
+                    // completed recently. 2000 instrs/slice at the
+                    // 19.2 MHz ACPU is ~0.1 ms/slice, so 96 slices
+                    // make one 10 ms jiffy — the same guest pace as
+                    // CONTAGEM_GPT (+4/slice). A per-slice +1 runs
+                    // jiffies ~100x too fast and the whole timekeeping
+                    // (ktime_get, tick_next_period comparisons) rides
+                    // ahead of the timer hardware; the catch-up loop
+                    // then chases a delta that never goes positive
+                    // (treadmill hypothesis, 2026-10-24). Keeps
+                    // calibrate_delay and early jiffies waits alive,
+                    // just at guest speed.
                     let sem_tick = ultimo_tick.map_or(true, |u| fatia.wrapping_sub(u) > 2000);
-                    if sem_tick {
+                    if sem_tick && fatia % 96 == 0 {
                         if let Ok(j) = cpu.read_u32(0xC02A_B638) {
                             let _ = cpu.write_u32(0xC02A_B638, j.wrapping_add(1));
                         }
@@ -3463,10 +4006,28 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
                         // THR drain: the console writes the byte to
                         // `[base+0x0C]`; drains into `kernel_tx` and zeroes
                         // to see the next one (cap 20000).
+                        // TEMP (serial tap): real-time console text, gated
+                        // to f >= 80000 (the 1.48s stall diagnosis — the
+                        // post-mortem log_buf dump shows 109 bytes and
+                        // can't be trusted). Cap 300 lines.
                         if let Ok(b) = cpu.read_u32(base + 12) {
                             if b != 0 && kernel_txb.borrow().len() < 20000 {
                                 kernel_txb.borrow_mut().push((b & 0xFF) as u8);
                                 let _ = cpu.write_u32(base + 12, 0);
+                                static mut NSER: u32 = 0;
+                                unsafe {
+                                    if fatia >= 80000 && NSER < 300 {
+                                        NSER += 1;
+                                        let c = (b & 0xFF) as u8;
+                                        if c == b'\n' {
+                                            eprintln!("SER f={fatia} NL");
+                                        } else if c.is_ascii_graphic() || c == b' ' {
+                                            eprintln!("SER f={fatia} {:#x} '{}'", c, c as char);
+                                        } else {
+                                            eprintln!("SER f={fatia} {:#x} .", c);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -3503,13 +4064,21 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
                 // frontend uploads `RAM_A6C0_BASE` from `cpu` and/or
                 // prints. Returning false stops the run early (stop
                 // reason then reads `Budget`).
+                // TEMP/RX work: tap channel 0 also carries console output
+                // — the `Cmd>` line-input echo uses `PUTC(0, c)`, whose raw
+                // r0=0 the tap records as channel 0 (measured: typed `hi`
+                // lands on ch0 while prompt/error stay on ch3). Without
+                // this, host typing is consumed but invisible on stdout.
                 let mut novos: Vec<u8> = Vec::new();
                 {
                     let tap_ref = tap.borrow();
-                    let todos = tap_ref.bytes_do_canal(3);
-                    if tap_marca <= todos.len() {
-                        novos.extend_from_slice(&todos[tap_marca..]);
-                        tap_marca = todos.len();
+                    for canal in [3u32, 0u32] {
+                        let todos = tap_ref.bytes_do_canal(canal);
+                        let marca = if canal == 3 { &mut tap_marca } else { &mut tap_marca_c0 };
+                        if *marca <= todos.len() {
+                            novos.extend_from_slice(&todos[*marca..]);
+                            *marca = todos.len();
+                        }
                     }
                 }
                 if saida_marca <= saida.len() {
@@ -3641,12 +4210,21 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
         }
     }
     // Halt traceback: what instruction stopped the run, decoded in
-    // place, plus the full register file. Printed once per fault
-    // stop (Budget exits are normal and stay quiet).
+    // place, plus the full register file. Printed once per terminal
+    // stop — Budget included, since stall runs end on Budget with no
+    // fault and the parked pc + stack + pc history names the stall.
     match &parada {
         StopReason::MemoryFault { addr, pc } => imprime_trace(&cpu, *pc, Some(*addr)),
         StopReason::Exception { pc } => imprime_trace(&cpu, *pc, None),
-        _ => {}
+        StopReason::Budget => {
+            imprime_trace(&cpu, cpu.read_reg(crate::cpu::Reg::Pc), None)
+        }
+        StopReason::ApiCall { addr } => {
+            imprime_trace(&cpu, cpu.read_reg(crate::cpu::Reg::Pc), Some(*addr))
+        }
+        StopReason::Returned => {
+            imprime_trace(&cpu, cpu.read_reg(crate::cpu::Reg::Pc), None)
+        }
     }
     // Final drain: a fault (or any non-Budget stop) lands mid-slice,
     // one instruction after a print (`bl 0x88001968` then `strh` faults
@@ -3728,15 +4306,14 @@ fn deve_entregar(mem: &GuestMemory) -> bool {
     } else {
         0xDEAD_DEAD
     };
-    // TEMP (kernel log_buf, v2): printk writes to the buffer even without
-    // console. Needle scanning only showed the old text
-    // (512 B windows around "Linux version" etc.). Now:
-    // dumps the 4 pages of __log_buf (0xC02C9000+0x4000, base
-    // found via "Linux version" with timestamps) and extracts ALL
-    // <N>[t] lines, sorted by timestamp — new ones show up.
+    // TEMP (kernel log_buf, v3): printk writes to the buffer even without
+    // console. v2 read 16 KB at 0xC02C9000 and went blind past index
+    // 0x3FFF — but LOG_BUF_MASK is 0x1FFFF (128 KB ring, proven by
+    // the CONDRV text tap). Read the whole ring so wrapped/new
+    // content shows up.
     let mut kernel_log: Vec<u8> = Vec::new();
     {
-        let mut buf = vec![0u8; 0x4000];
+        let mut buf = vec![0u8; 0x2_0000];
         let mut ok_total = 0;
         for (i, pg) in buf.chunks_mut(0x1000).enumerate() {
             let va = 0xC02C_9000u32.wrapping_add((i as u32) * 0x1000);

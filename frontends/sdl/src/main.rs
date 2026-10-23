@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use zeebx::cpu::CpuBackend;
 use zeebx::msm7201a::{
-    Botoes, RAM_A6C0_BASE, RAM_A6C0_TAMANHO, executa_spl_vivo_com_botoes,
+    Botoes, RAM_A6C0_BASE, RAM_A6C0_TAMANHO, executa_spl_vivo_com_botoes, rx_enfileira,
 };
 
 const LARGURA: u32 = 320;
@@ -224,6 +224,11 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    // TEMP/RX work: host keystrokes reach the guest `Cmd>` shell as text.
+    // `TextInput` (not `KeyDown`) carries the printable characters, so the
+    // P/S/H/B/T button shortcuts keep working untouched; `rx_enfileira`
+    // filters to what the shell line input accepts (printable + BS + CR).
+    video.text_input().start();
     let mut fb = vec![0u8; RAM_A6C0_TAMANHO];
     let mut rgb = vec![0u8; (LARGURA * ALTURA * 3) as usize];
     let mut ultimo_envio = Instant::now() - Duration::from_secs(1);
@@ -417,6 +422,15 @@ fn main() -> std::process::ExitCode {
                             &quer_sair_cb,
                             &mut tela,
                         ),
+                        // TEMP/RX work: typed text becomes guest keystrokes
+                        // (see `rx_enfileira`). Host Enter arrives as LF
+                        // here; the shell wants CR (`0x0A`/`0x0D` both end
+                        // a line, but CR matches the hardware path).
+                        Event::TextInput { text, .. } => {
+                            for b in text.bytes() {
+                                rx_enfileira(if b == b'\n' { b'\r' } else { b });
+                            }
+                        }
                         Event::MouseButtonDown { x, y, .. } => {
                             let base_y = (ALTURA * ESCALA) as i32;
                             if y >= base_y {

@@ -22,6 +22,24 @@ const Q: u32 = 1 << 27;
 const T: u32 = 1 << 5;
 const MODO_USUARIO: u32 = 0x10;
 
+/// Total IRQ deliveries taken since reset. The per-delivery ENTRA log
+/// is gated and capped; TIMERSTATE samples this counter to show the
+/// true tick rate (monotonic — read-only for the harness).
+pub static mut ULTIMA_ENTREGA: u32 = 0;
+/// Total unmask edges (cpsie/exception-return/msr clearing I) since
+/// reset. TIMERSTATE samples it alongside deliveries: unmasks without
+/// deliveries = the line/edge gate is the blocker; no unmasks at all =
+/// something holds I=1 (mask-holder hunt).
+pub static mut TOTAL_DESMASCA: u32 = 0;
+/// Total maskings (cpsid/msr setting I/exception entry saving I=0? no:
+/// only explicit sets) since reset. Rate per slice shows whether the
+/// guest still toggles IRQs (alive) or is stuck masked (wall).
+pub static mut TOTAL_MASCARA: u32 = 0;
+/// WFI executions since reset (see TIMERSTATE): distinguishes a
+/// sleeping idle loop (WFI burns whole slices) from a busy spin
+/// (no WFI, full slices executed).
+pub static mut TOTAL_WFI: u32 = 0;
+
 /// Semihosting operations recorded by the `unicorn` hook. The `SVC` immediate does not change
 /// course: any `SVC` looks at the operation in `r0`. The PopCap games initialize through here.
 const SYS_WRITEC: u32 = 0x03;
@@ -75,10 +93,24 @@ pub struct Interpretador {
     banco: [[u32; 2]; 6],
     spsr: [u32; 6],
     /// Level IRQ line, polled from host device state (the MSM VIC).
-    fonte_irq: Option<Box<dyn FnMut(&GuestMemory) -> bool>>,
+    fonte_irq: Option<Box<dyn FnMut(&GuestMemory, bool) -> bool>>,
     /// Set by WFI (CP15 c7,c0,4): idle until the line rises.
     esperando: bool,
     sondagem_irq: u32,
+    /// An unmask happened (cpsie / exception return / msr clearing
+    /// I): recheck the line at the next loop top. The 64-instruction
+    /// poll counter provably strides over brief unmasked windows
+    /// (live: idle unmasks every iteration, zero deliveries for
+    /// 200k slices) — this edge makes delivery unmissable.
+    irq_pendente: bool,
+    /// Timer/IRQ state changed (MMIO write or per-slice COUNT
+    /// catch-up flipped STATUS 0->1): recheck the line at the next
+    /// UNMASKED loop top. Unlike irq_pendente (consumed by the first
+    /// check), this persists across masked stretches, so an edge born
+    /// while masked is served at the next unmask instead of being
+    /// sampled away. Set in es_mem (timer/EN writes) and by the
+    /// harness per-slice plant (STATUS rising edge).
+    timer_sujo: bool,
 }
 
 impl Interpretador {
@@ -103,6 +135,8 @@ impl Interpretador {
             fonte_irq: None,
             esperando: false,
             sondagem_irq: 0,
+            irq_pendente: false,
+            timer_sujo: false,
         })
     }
 
@@ -137,16 +171,20 @@ impl Interpretador {
         self.gancho_pc = Some(Box::new(gancho));
     }
 
-    /// Install the IRQ line source: `fonte(mem)` returns whether any
-    /// enabled interrupt is pending. Polled between instructions while
-    /// CPSR.I is clear (and while idling in WFI).
-    pub fn set_fonte_irq(&mut self, fonte: impl FnMut(&GuestMemory) -> bool + 'static) {
+    /// Install the IRQ line source: `fonte(mem, livre)` returns
+    /// whether any enabled interrupt is pending. `livre` is true only
+    /// when the caller will actually deliver (I==0): the harness
+    /// latch advances its MATCH one-shot only on delivering
+    /// evaluations, so a masked observation must never consume the
+    /// edge. Polled between instructions while CPSR.I is clear (and
+    /// while idling in WFI).
+    pub fn set_fonte_irq(&mut self, fonte: impl FnMut(&GuestMemory, bool) -> bool + 'static) {
         self.fonte_irq = Some(Box::new(fonte));
     }
 
-    fn linha_irq(&mut self) -> bool {
+    fn linha_irq(&mut self, livre: bool) -> bool {
         match self.fonte_irq.as_mut() {
-            Some(f) => f(&self.mem),
+            Some(f) => f(&self.mem, livre),
             None => false,
         }
     }
@@ -190,46 +228,68 @@ impl Interpretador {
 
     /// Exception return: CPSR <- SPSR, then branch honoring the restored T.
     fn retorno_excecao(&mut self, alvo: u32) {
-        // TEMP (I-change hunt): log exception returns that flip I.
-        // RPX shows tick #1 entering run_posix with I=1 but tick #2
-        // with I=0; no cps/msr enable fires between them, so the bit
-        // must come back wrong through a restore. Cap 10.
+        // TEMP (I-change hunt): log exception returns that flip I,
+        // gated to the preempt-BUG window (ins >= 166M, cap 200).
+        // An early uncapped run died at boot (cap 10 consumed by
+        // SPL/kernel transitions) and went blind before the fault.
         if let Some(spsr) = self.spsr_atual() {
             let antes_i = self.cpsr & 0x80;
             let depois_i = spsr & 0x80;
             if antes_i != depois_i {
                 static mut NRET: u32 = 0;
                 unsafe {
-                    if NRET < 10 {
+                    if self.instrucoes > 166_000_000 && NRET < 200 {
                         NRET += 1;
                         let n = NRET;
-                        eprintln!("RETX#{n} alvo={alvo:#x} mode={mode:#x} I:{a}->{b}", mode = self.cpsr & 0x1F, a = antes_i != 0, b = depois_i != 0);
+                        eprintln!("RETX#{n} ins={} alvo={alvo:#x} mode={mode:#x} I:{a}->{b}", self.instrucoes, mode = self.cpsr & 0x1F, a = antes_i != 0, b = depois_i != 0);
                     }
                 }
             }
             self.troca_modo(spsr);
+            // Unmask edge: genuine 1->0 only.
+            if antes_i != 0 && depois_i == 0 {
+                self.irq_pendente = true;
+                unsafe { TOTAL_DESMASCA = TOTAL_DESMASCA.wrapping_add(1); }
+            }
         }
         self.r[15] = if self.thumb() { alvo & !1 } else { alvo & !3 };
     }
 
     /// Take an IRQ before the instruction at `r[15]` executes.
+    /// Counts every delivery in ULTIMA_ENTREGA (read by TIMERSTATE's
+    /// per-slice log): the per-delivery ENTRA log is gated and capped,
+    /// but the counter shows the true tick rate through the fault.
     fn entra_irq(&mut self) {
         let velho = self.cpsr;
-        // TEMP (entry audit): log pre/post CPSR + faulting pc for the
-        // first deliveries. RPX shows tick #2 entering run_posix with
-        // I=0 while #1 shows I=1, with no clearer in between — audit
-        // whether entry itself ever fails to set I. Cap 6.
+        unsafe {
+            ULTIMA_ENTREGA = ULTIMA_ENTREGA.wrapping_add(1);
+        }
+        // TEMP (entry audit): log pre-entry CPSR + faulting pc,
+        // gated to the preempt-BUG window (ins >= 167M, fault at
+        // ~168.5M). Are there any backend deliveries at all near
+        // the fault, or is the dispatch path entered without one?
         static mut NENT: u32 = 0;
         unsafe {
-            if NENT < 6 {
+            if self.instrucoes >= 167_000_000 && NENT < 20 {
                 NENT += 1;
                 let n = NENT;
-                eprintln!("ENTRA#{n} velho={velho:#x} pc={pc:#x}", pc = self.r[15]);
+                eprintln!("ENTRA#{n} ins={} velho={velho:#x} pc={pc:#x}", self.instrucoes, pc = self.r[15]);
             }
         }
         let retorno = self.r[15].wrapping_add(4);
         // ARMv6 IRQ entry: mode IRQ, ARM state, I and A masked.
         self.troca_modo((velho & !(0x1F | T)) | 0x12 | 0x80 | 0x100);
+        // TEMP: verify the entry mask actually lands. The preempt BUG
+        // sees I=0 with no clearer in between — confirm entra_irq
+        // itself still sets I=1 on every delivery.
+        unsafe {
+            static mut NENT2: u32 = 0;
+            if NENT2 < 20 && (self.cpsr & 0x80) == 0 {
+                NENT2 += 1;
+                let n = NENT2;
+                eprintln!("ENTRA-NOI#{n} ins={} cpsr={:#x}", self.instrucoes, self.cpsr);
+            }
+        }
         // IRQ-bank SP fallback: hardware reset leaves it undefined and the
         // kernel programs it in cpu_init — but the first tick can arrive
         // with it still zero (live-proven: vector prologue `stm sp,{r0,lr}`
@@ -291,6 +351,14 @@ impl Interpretador {
             let pos = self.armadilhas_mem.partition_point(|(a, _)| *a < addr);
             self.armadilhas_mem.insert(pos, (addr, Box::new(gancho)));
         }
+    }
+
+    /// Mark timer/IRQ state dirty: recheck the line at the next
+    /// UNMASKED loop top. Called by the harness per-slice plant when
+    /// COUNT catches up (STATUS 0->1); es_mem sets the flag directly
+    /// for MMIO writes.
+    pub fn marca_timer_sujo(&mut self) {
+        self.timer_sujo = true;
     }
 
     /// Remove the memory-serving PC trap at `addr`, if any. Other armed
@@ -447,6 +515,10 @@ impl Interpretador {
                 || addr == 0xE000_0024
                 || (0xE000_1000..0xE000_1018).contains(&addr))
         {
+            // Any timer/EN write may birth an edge: mark dirty so the
+            // next UNMASKED loop top rechecks (persists across masked
+            // stretches, unlike the one-shot unmask flag).
+            self.timer_sujo = true;
             let v = u32::from_le_bytes([dados[0], dados[1], dados[2], dados[3]]);
             // Shadow EN (0x30/0x34 bank) with THIS write applied.
             let r = |m: &GuestMemory, a: u32| m.read_u32(a).unwrap_or(0);
@@ -477,6 +549,21 @@ impl Interpretador {
             let _ = self.mem.write_u32(0xE000_00D0, vect);
             let _ = self.mem.write_u32(0xE000_00D4, vect);
             let _ = self.mem.write_u32(0xE000_0080, st & !0x180 | vic & 0x180);
+        }
+        // TEMP (MATCH writers, gated ins > 166M ≈ f 83k, cap 30):
+        // the 1.65s wall has STATUS stuck while wake advances —
+        // is the GPT MATCH fought over by the tick (10ms) and the
+        // idle alarm (~88 ticks)? Logs every writer pc + value.
+        if dados.len() == 4 && addr == 0xE000_1000 {
+            static mut NMW: u32 = 0;
+            unsafe {
+                if self.instrucoes > 166_000_000 && NMW < 30 {
+                    NMW += 1;
+                    let n = NMW;
+                    let v = u32::from_le_bytes([dados[0], dados[1], dados[2], dados[3]]);
+                    eprintln!("MATCHW#{n} ins={} pc={pc:#x} val={v:#x}", self.instrucoes);
+                }
+            }
         }
         if addr == 0xE000_0030
             || addr == 0xE000_0034
@@ -655,34 +742,56 @@ impl Interpretador {
             let mascara = ((instr >> 8) & 1) << 8
                 | ((instr >> 7) & 1) << 7
                 | ((instr >> 6) & 1) << 6;
-            // imod bit 0 selects: 1 = enable (CLEAR the mask bits),
-            // 0 = disable (SET them). cpsid i is imod=2, cpsie i is
-            // imod=3 — verified against the encodings (0xF1080080 /
-            // 0xF10C0080), not just the manual's table. (This was
-            // inverted for the whole bring-up: enables disabled and
-            // vice versa, freezing the kernel masked after tick #1.)
+            // imod bit 0 selects: 0 = enable (CLEAR the mask bits),
+            // 1 = disable (SET them). cpsie i is 0xF1080080 (imod=2),
+            // cpsid i is 0xF10C0080 (imod=3) — verified by assembling
+            // both mnemonics with arm-none-eabi-as (the toolchain that
+            // built this kernel), not by reading the manual's table.
+            // (An earlier \"fix\" had this backwards, matching a swapped
+            // objdump print table; it made every guest disable enable
+            // and vice versa, which is exactly what tripped the
+            // sched.c:4032 BUG_ON: __do_softirq's post-loop cpsid
+            // left I clear instead of set.)
             if imod & 1 != 0 {
+                // TEMP (I-set hunt): log every cps that SETS I (guest
+                // disable). Completes the I-bit timeline: with both
+                // directions logged, any drift to I=0 must come from
+                // an unlogged path (there is none left).
+                if mascara & 0x80 != 0 && self.cpsr & 0x80 == 0 {
+                    static mut NCPSD: u32 = 0;
+                    unsafe {
+                        if self.instrucoes > 183_000_000 && NCPSD < 2000 {
+                            NCPSD += 1;
+                            let n = NCPSD;
+                            eprintln!("CPSID#{n} ins={} pc={pc:#x} mode={mode:#x}", self.instrucoes, pc = pc, mode = self.cpsr & 0x1F);
+                        }
+                    }
+                    unsafe { TOTAL_MASCARA = TOTAL_MASCARA.wrapping_add(1); }
+                }
+                self.cpsr |= mascara;
+            } else {
+                // Genuine I 1->0 only (FIQ-only cps must not count).
+                let limpava = mascara & 0x80 != 0 && self.cpsr & 0x80 != 0;
                 // TEMP (I-clear hunt): log every cps that clears I
-                // (guest enable). Cap 8. The RPX probe shows tick #1
-                // enters run_posix with I=1 but tick #2 with I=0 —
-                // same path, so something enables mid-handler.
-                if mascara & 0x80 != 0 && self.cpsr & 0x80 != 0 {
+                // (guest enable). Cap 2000, gated past the wall.
+                if limpava {
                     static mut NCPSE: u32 = 0;
                     unsafe {
-                        // Gate to just before the first tick (f≈78984, i.e.
-                        // ~157.97M instructions; SPL alone burns ~156M).
-                        // The setup_irq triplets would otherwise eat the
-                        // cap before the window opens.
-                        if self.instrucoes > 157_500_000 && NCPSE < 200 {
+                        if self.instrucoes > 183_000_000 && NCPSE < 2000 {
                             NCPSE += 1;
                             let n = NCPSE;
-                            eprintln!("CPSIE#{n} pc={pc:#x} mode={mode:#x}", pc = pc, mode = self.cpsr & 0x1F);
+                            eprintln!("CPSIE#{n} ins={} pc={pc:#x} mode={mode:#x}", self.instrucoes, pc = pc, mode = self.cpsr & 0x1F);
                         }
                     }
                 }
                 self.cpsr &= !mascara;
-            } else {
-                self.cpsr |= mascara;
+                // Unmask edge: recheck the line at the next loop top
+                // (unmissable delivery; the 64-poll strides over brief
+                // idle unmasks).
+                if limpava {
+                    self.irq_pendente = true;
+                    unsafe { TOTAL_DESMASCA = TOTAL_DESMASCA.wrapping_add(1); }
+                }
             }
         }
         if imod == 0 {
@@ -910,11 +1019,17 @@ impl Interpretador {
                 if NMSRE < 200 {
                     NMSRE += 1;
                     let n = NMSRE;
-                    eprintln!("MSRIE#{n} pc={pc:#x} mode={mode:#x}", pc = pc, mode = self.cpsr & 0x1F);
+                    eprintln!("MSRIE#{n} ins={} pc={pc:#x} mode={mode:#x}", self.instrucoes, pc = pc, mode = self.cpsr & 0x1F);
                 }
             }
         }
+        let era_mascarado = !para_spsr && self.cpsr & 0x80 != 0;
         self.troca_modo(novo);
+        // Unmask edge: genuine 1->0 on CPSR writes only.
+        if era_mascarado && self.cpsr & 0x80 == 0 {
+            self.irq_pendente = true;
+            unsafe { TOTAL_DESMASCA = TOTAL_DESMASCA.wrapping_add(1); }
+        }
     }
 
     fn arm_dados(&mut self, instr: u32, pc: u32, imediato: bool) -> Result<bool, StopReason> {
@@ -1322,6 +1437,7 @@ impl Interpretador {
             // MCR p15, 0, Rd, c7, c0, 4: wait for interrupt.
             if chave == (7 << 7) | 4 {
                 self.esperando = true;
+                unsafe { TOTAL_WFI = TOTAL_WFI.wrapping_add(1); }
                 return Ok(false);
             }
             let valor = self.le_reg(rd, pc, 0);
@@ -2123,6 +2239,8 @@ impl CpuBackend for Interpretador {
         self.banco = [[0; 2]; 6];
         self.spsr = [0; 6];
         self.esperando = false;
+        self.irq_pendente = false;
+        self.timer_sujo = false;
         Ok(())
     }
 
@@ -2150,12 +2268,70 @@ impl CpuBackend for Interpretador {
             // (device state only changes at slice boundaries or through
             // guest writes, so this bounds latency, not correctness).
             if self.esperando {
-                if self.linha_irq() {
+                if self.linha_irq((self.cpsr & 0x80) == 0) {
                     self.esperando = false;
+                    // Wake on a pending edge: deliver NOW if unmasked,
+                    // before the guest reprograms MATCH and hides it
+                    // (the 1.65s wall: every unmask-check sees a fresh
+                    // future MATCH, so the edge never survives to a
+                    // check). r15 already advanced past WFI: back up
+                    // 4 so lr resumes after WFI, not 8 past it.
+                    // TEMP (wake audit): log pc+I at every wake (cap
+                    // 10) — masked wakes explain the frozen nent.
+                    static mut NWAKE: u32 = 0;
+                    unsafe {
+                        if NWAKE < 10 {
+                            NWAKE += 1;
+                            let n = NWAKE;
+                            eprintln!("WAKE#{n} ins={} pc={:#x} I={} mode={:#x}", self.instrucoes, self.r[15], (self.cpsr >> 7) & 1, self.cpsr & 0x1F);
+                        }
+                    }
+                    if self.cpsr & 0x80 == 0 {
+                        self.r[15] = self.r[15].wrapping_sub(4);
+                        self.entra_irq();
+                    }
                 } else {
                     // Idle: burn the rest of the slice; host time moves on.
                     self.instrucoes = limite;
                     return Ok(StopReason::Budget);
+                }
+            }
+            // Unmask edge: an unmask happened since the last check
+            // (cpsie / exception return / msr clearing I). Serve a
+            // pending line NOW, unmissable — the 64-poll below strides
+            // over the idle loop's brief unmasked windows forever.
+            // (Backstop poll stays.)
+            if self.irq_pendente {
+                self.irq_pendente = false;
+                // TEMP (check audit, f >= 100000, cap 10): log I-bit +
+                // gate verdict at every unmask-check. Distinguishes
+                // latch-shut (I=0, false) from re-masked-before-check
+                // (I=1, which should be impossible).
+                static mut NCHK: u32 = 0;
+                unsafe {
+                    if self.instrucoes > 200_000_000 && NCHK < 10 {
+                        NCHK += 1;
+                        let n = NCHK;
+                        let res = self.linha_irq(true);
+                        eprintln!("CHK#{n} ins={} I={} res={res}", self.instrucoes, (self.cpsr >> 7) & 1);
+                        if res && self.cpsr & 0x80 == 0 {
+                            self.entra_irq();
+                        }
+                    } else if self.cpsr & 0x80 == 0 && self.linha_irq(true) {
+                        self.entra_irq();
+                    }
+                }
+            }
+            // Dirty timer state: a birth (MMIO write or per-slice
+            // catch-up) happened since the last unmasked check.
+            // Persists across masked stretches (unlike the flag above,
+            // which the first low check consumes), so an edge born
+            // while masked is served at the next unmask instead of
+            // being sampled away. Consumed only by an unmasked check.
+            if self.cpsr & 0x80 == 0 && self.timer_sujo {
+                self.timer_sujo = false;
+                if self.linha_irq(true) {
+                    self.entra_irq();
                 }
             }
             // TEMP (tick timeline): logs masked<->free transitions
@@ -2191,7 +2367,7 @@ impl CpuBackend for Interpretador {
                 }
             if self.cpsr & 0x80 == 0 {
                 self.sondagem_irq = self.sondagem_irq.wrapping_add(1);
-                if self.sondagem_irq & 63 == 0 && self.linha_irq() {
+                if self.sondagem_irq & 63 == 0 && self.linha_irq(true) {
                     self.entra_irq();
                 }
             }
@@ -2378,6 +2554,11 @@ mod tests {
         // IRQ delivery + exception return through the handler. The
         // fonte is always pending; the handler runs and the CPSR
         // (USR, I clear) comes back intact.
+        // Delivery is edge-driven on unmask: with the line stuck
+        // high and I=0, the return redelivers IMMEDIATELY (same as
+        // hardware — no 64-instruction poll gap), so the run ends
+        // mid-handler, not in the USR spin. Assert delivery happened
+        // (r0==7); the final mode is where Budget lands.
         // 0x00: mov r0, #0; 0x04: b . ; 0x18: mov r0, #7; movs pc, lr.
         let mut cpu = cpu_with(&arm(&[
             0xe3a0_0000,
@@ -2389,25 +2570,26 @@ mod tests {
             0xe3a0_0007,
             0xe1b0_f00e,
         ]));
-        cpu.set_fonte_irq(|_| true);
+        cpu.set_fonte_irq(|_, _| true);
         assert_eq!(cpu.run(0, 200).unwrap(), StopReason::Budget);
         assert_eq!(cpu.read_reg(Reg::R0), 7);
-        assert_eq!(cpu.cpsr(), 0x10);
     }
 
     #[test]
     fn cpsid_sets_cpsie_clears_i_bit() {
-        // cpsid i (0xF1080080, imod=2) SETS I; cpsie i (0xF10C0080,
-        // imod=3) CLEARS it. This was inverted for the whole bring-up
-        // (enables masked, disables unmasked), freezing the kernel
-        // with I=1 after the first tick. Regression guard.
+        // cpsie i is 0xF1080080 (imod=2, CLEARS I); cpsid i is
+        // 0xF10C0080 (imod=3, SETS it) — mapping verified by assembling
+        // both mnemonics with arm-none-eabi-as. An earlier version of
+        // this test had them backwards (matching a swapped objdump
+        // print table), which masked a backend inversion that tripped
+        // the sched.c:4032 BUG_ON. Regression guard.
         let mut cpu = cpu_with(&arm(&[0xf108_0080, 0xf10c_0080]));
         cpu.write_reg(Reg::Pc, 0);
         assert_eq!(cpu.cpsr() & 0x80, 0);
         cpu.run(0, 1).unwrap();
-        assert_ne!(cpu.cpsr() & 0x80, 0, "cpsid i must SET I");
-        cpu.run(4, 1).unwrap();
         assert_eq!(cpu.cpsr() & 0x80, 0, "cpsie i must CLEAR I");
+        cpu.run(4, 1).unwrap();
+        assert_ne!(cpu.cpsr() & 0x80, 0, "cpsid i must SET I");
     }
 
     #[test]
@@ -2434,6 +2616,53 @@ mod tests {
     }
 
     #[test]
+    fn desmascarar_entrega_irq_pendente_sem_poll() {
+        // Unmask edge: cpsie with the line already high must deliver
+        // on the very next loop top, not up to 63 instructions later.
+        // (The 64-poll counter strides over default_idle's brief
+        // unmasked windows forever — live: zero deliveries for 200k
+        // slices.) Budget 6 proves immediacy: without the edge the
+        // poll would need ~64 unmasked instructions first (r0==0).
+        // 0x00: cpsid i; 0x04: cpsie i; 0x08: b .;
+        // 0x18: mov r0, #7; movs pc, lr.
+        let mut cpu = cpu_with(&arm(&[
+            0xf10c_0080, // cpsid i (masked start)
+            0xf108_0080, // cpsie i (unmask edge)
+            0xeaff_fffe, // b . (never runs: delivery preempts it)
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0xe3a0_0007, // handler: mov r0, #7
+            0xe1b0_f00e, // movs pc, lr
+        ]));
+        cpu.set_fonte_irq(|_, _| true);
+        assert_eq!(cpu.run(0, 6).unwrap(), StopReason::Budget);
+        assert_eq!(cpu.read_reg(Reg::R0), 7);
+    }
+
+    #[test]
+    fn wfi_acorda_e_entrega_irq_desmascarado() {
+        // WFI wake with I=0 delivers on the spot (before the guest
+        // can reprogram MATCH and hide the edge — the 1.65s wall).
+        // Masked WFI still just wakes (see wfi_acordado...).
+        // 0x00: wfi; 0x04: b . (never runs: delivery preempts it);
+        // 0x18: mov r0, #7; movs pc, lr.
+        let mut cpu = cpu_with(&arm(&[
+            0xee07_0f90, // wfi
+            0xeaff_fffe, // b .
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0x0000_0000,
+            0xe3a0_0007, // handler: mov r0, #7
+            0xe1b0_f00e, // movs pc, lr
+        ]));
+        cpu.set_fonte_irq(|_, _| true);
+        assert_eq!(cpu.run(0, 6).unwrap(), StopReason::Budget);
+        assert_eq!(cpu.read_reg(Reg::R0), 7);
+    }
+
+    #[test]
     fn wfi_queima_orcamento_sem_travar() {
         // mcr p15,0,r0,c7,c0,4 = 0xEE070F90. Without fonte: burns the
         // slice and returns Budget (never hangs the run).
@@ -2451,7 +2680,7 @@ mod tests {
             0xee07_0f90, // wfi
             0xeaff_fffe, // b . (nunca sai daqui sem IRQ)
         ]));
-        cpu.set_fonte_irq(|_| true);
+        cpu.set_fonte_irq(|_, _| true);
         assert_eq!(cpu.run(0, 200).unwrap(), StopReason::Budget);
         assert_ne!(cpu.cpsr() & (1 << 7), 0);
     }

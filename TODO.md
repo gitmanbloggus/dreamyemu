@@ -329,16 +329,19 @@ Still open (2026-10-23 evening):
   `0xC002AC08`) and never again, so the one-shot latch correctly
   holds the line at a single `TICKH` and the old double-tick
   `BUG_ON` is gone (all `RPX` show `I=1`, runs end on `Budget`).
-  Why `-ETIME` persists is the whole game now. PROGEV shows the
-  expiry arg advancing +10M/call (0x1312D00 → 0x2FAF080 over the
-  first 4 loop calls) yet the result never flips to success;
-  either the advancement resets (loop recomputes from a stale
-  `tick_next_period` instead of accumulating) or the verify reads
-  a different counter than the plant writes. Extended PROGEV
-  (live COUNT+MATCH per call, built, not yet run) discriminates
-  directly. If the base is stale: find `tick_next_period` via
-  `tick_program_event` (0xC00652D0) refs (absent from kallsyms)
-  and plant `now + delta`.
+  Why `-ETIME` persists is the whole game now. PROGEV (with
+  live COUNT+MATCH per call, verified in linux204/205: single
+  TICKH, RPX all I=1, no BUG, klog frozen at 27 lines) shows the
+  expiry arg advancing +10M/call over the first loop calls, yet
+  the result never flips across 80k+ iterations. Current best
+  theory is a watchdog treadmill: consistent only if `now`
+  advances in lockstep — i.e. the active clocksource is
+  jiffies-driven (watchdog +1/slice plus `do_timer` +1/iteration)
+  and the expiry is recomputed as `now + C` with C <= 0 every
+  iteration. NEXT STEP: slow the watchdog to guest rate (+1 per
+  ~96 slices) and re-run — if the loop converges into periodic
+  ticks, confirmed; if not, the expiry base itself is stale and
+  `tick_next_period` must be planted.
 - The `genl_init`/`synchronize_rcu` park is BEHIND the tick:
   without a completing first tick there is no RCU progress at all
   (klog frozen at `console [tty0]`, 27 lines — the 61-line

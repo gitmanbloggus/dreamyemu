@@ -565,6 +565,21 @@ impl Interpretador {
                 }
             }
         }
+        // TEMP (direct MATCH writes, ins > 180M ≈ f 90k, cap 20):
+        // MATCH advances in lockstep with COUNT but neither
+        // set_next_event wrapper fires — someone writes 0xE0001000
+        // directly. Name the pc + value.
+        if dados.len() == 4 && addr == 0xE000_1000 {
+            static mut NMW2: u32 = 0;
+            unsafe {
+                if self.instrucoes > 180_000_000 && NMW2 < 20 {
+                    NMW2 += 1;
+                    let n = NMW2;
+                    let v = u32::from_le_bytes([dados[0], dados[1], dados[2], dados[3]]);
+                    eprintln!("MATCHW2#{n} ins={} pc={pc:#x} val={v:#x}", self.instrucoes);
+                }
+            }
+        }
         if addr == 0xE000_0030
             || addr == 0xE000_0034
             || addr == 0xE000_0020

@@ -350,27 +350,36 @@ Still open (2026-10-23 evening):
   pair (no kthread hang); SCHED activity continues past 91k
   (uncapped run proved it). The CONDRV text tap proves the flush backlog (t=0.0s
   messages still draining at f=82k); the widened 128 KB dump shows
-  the spiral tail. Root cause, proven 2026-10-24: (1) consecutive
+  the spiral tail. Root cause, proven 2026-10-23/24: (1) consecutive
   PROGEV sampling + disassembly showed the passed expiry FROZEN
   while now advanced +10M/call — the old plant bypassed
   set_next_event, freezing dev->next_event; the +1-period lead in
   the PROGEV mirror made program_event succeed FOR REAL (was_r0=0),
   and with the plant removed the guest drives 10ms MATCH deltas
-  itself (klog 1.48→1.65s). (2) Deliveries then froze past f≈100k
-  with STATUS stuck: the 64-instruction poll counter provably
-  strides over default_idle's brief unmasked windows
-  (deterministic aliasing — WFI phase-locks every slice). Landed
-  2026-10-24: event-driven delivery (any unmask flags
-  irq_pendente, served at the next loop top) + dirty tracking +
-  livre-gated latch (masked evaluations must not consume the
-  one-shot edge) + wake-time delivery. Verified: nent 150→151,
-  unit tests for unmask-edge and wake-delivery. But the wall
-  persists: post-100k the guest stops unmasking, reprogramming
-  and scheduling entirely (ndes/nmas/SCHED/MATCH all frozen) —
-  parked in msleep inside mddi_init (SCHSTK#105) with a dead
-  timer wheel. Open: host-side periodic MATCH reprogram and/or
-  unmask to resuscitate, or find what the masked idle loop waits
-  for. Then retire the mirror/force nets + TEMP probes.
+  itself (klog 1.48→1.65s). (2) Deliveries then froze past f≈100k:
+  the 64-instruction poll counter strides over the brief unmasked
+  windows (deterministic aliasing). Landed event-driven delivery
+  (unmask flags irq_pendente, served at next loop top) + dirty
+  tracking + livre-gated latch + wake-time delivery; verified
+  nent 150→151 with unit tests. (3) Root cause of the freeze: the
+  registered clockevent handler was hrtimer_interrupt
+  (oneshot/NO_HZ), whose path never programs the next event — no
+  periodic ticks, no unmask, no reprogram, frozen MATCH. Fix:
+  append `nohz=off highres=off` to ATAG_CMDLINE at handoff (tag
+  grown 75->83 words, tail shifted; VA src + PA mirror + VA kernel
+  copy). The tick is now PERIODIC.
+- Frontier moved to t≈27s (2026-10-24): with periodic ticks +
+  host kick (MATCH plant when stale + unmask + dirty every 100
+  slices) boot walks driver initcalls: mddi_pmdh init fails
+  gracefully (-ENODEV, unsupported version 0x0 on stubbed regs),
+  msm_serial detected, loop/PPP, ashmem, yaffs, io scheduler,
+  mmc1 SDCC probe (0xE1000000 stubbed), then parks in
+  msm_dmov_exec_cmd wait_for_completion. DMA completions are faked
+  per-call-site (lr 0xC002B570 only) until a real ADM model exists.
+  New stubs this round: 0xFFC00000 (MDDI), 0xE0200000 (CAMIF PAD),
+  0xE1000000 (SDCC). Open: verify the DMA waiter wakes and boot
+  proceeds past mmc; then retire the kick/mirror/skip TEMP
+  scaffolding.
 - The first tick now COMPLETES (periodic ticks flow: klog
   timestamps advance 1.39→1.47s, PREENT passes repeatedly,
   schedule activity). The old `-ETIME` treadmill analysis below

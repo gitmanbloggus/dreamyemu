@@ -1143,8 +1143,11 @@ fn imprime_trace(
     }
     eprintln!("TRACE stack@{:#x}={:#x?}", r[13], pilha);
     // Path tail: last executed PCs (the ring already exists for cauda).
+    // TEMP widened to 200 for the 1.65s wall: distinguishes a tight
+    // loop (repeating pcs = disassemble the exit condition) from a
+    // long linear walk (slow progress = run longer).
     let hist = cpu.historico();
-    let n = hist.len().min(24);
+    let n = hist.len().min(200);
     eprintln!("TRACE last {} pcs:", n);
     for pc in hist.iter().skip(hist.len().saturating_sub(n)) {
         eprintln!("TRACE   {pc:#x}");
@@ -1360,6 +1363,17 @@ pub static mut AUDIT_LATCH: bool = false;
     // Sibling MDP/MDDI window (`0xE0060000`; first hit 2026-10-23:
     // str to [0xE006FFFC] from `mdp_init` at 0xC011C198). Same stub.
     mem.map_zeroed("mdp_d_stub", 0xE006_0000, 0x1_0000).unwrap();
+    // MDDI register block (`0xFFC00000`; first hit 2026-10-24:
+    // `mddi_init` -> `mddi_init_registers` memset 0x140 bytes at
+    // [0xFFC00000]). Zeroed 64 KiB stub, same terms.
+    mem.map_zeroed("mddi_stub", 0xFFC0_0000, 0x1_0000).unwrap();
+    // CAMIF PAD registers (`0xE0200000`; first hit 2026-10-24:
+    // `mt9t013_camif_pad_reg_reset` str to [0xE0200000]). Zeroed
+    // 64 KiB stub, same terms.
+    mem.map_zeroed("camif_stub", 0xE020_0000, 0x1_0000).unwrap();
+    // SDCC (SD controller) block (`0xE1000000`; first hit 2026-10-24:
+    // `msmsdcc_probe` str to [0xE100003C]). Zeroed 64 KiB stub.
+    mem.map_zeroed("msmsdcc_stub", 0xE100_0000, 0x1_0000).unwrap();
     // ARM exception vectors (`0xFFFF0000`, high vectors): the kernel
     // reads/copies its stubs there during trap setup (first seen as
     // a read with r0=0xFFFF0000). Zeroed page; the guest fills it.
@@ -2152,7 +2166,12 @@ pub static mut AUDIT_LATCH: bool = false;
     // stall parks init in kthread_create->wait_for_completion. Log
     // every waiter (completion addr + task) and every waker
     // (completion addr). A waiter with no matching waker = the hang.
-    // Cap 30 each, gate f >= 80000 (boot noise before).
+    // Cap 300 each, gate f >= 80000 (boot noise before). PLUS: the
+    // msm_dmov_exec_cmd waiter (lr 0xC002B570) is completed
+    // immediately (done=1) — the ADM datamover is unmodeled and
+    // would never signal it (init parks here after mddi). Scoped to
+    // that single call site; all other completions behave normally.
+    // Revisit with a real ADM model.
     cpu.trap_pc_mem(0xC021_335C, move |mem, regs| {
         static mut N: u32 = 0;
         unsafe {
@@ -2162,6 +2181,10 @@ pub static mut AUDIT_LATCH: bool = false;
                 let ti = regs[13] & !0x1FFF;
                 let task = mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
                 eprintln!("WAIT#{n} f={} compl={:#x} task={:#x} ti={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], task, ti, regs[14]);
+                if regs[14] == 0xC002_B570 {
+                    let _ = mem.write_u32(regs[0], 1);
+                    eprintln!("WAIT-DMOV-COMPLETE#{n} f={}", unsafe { FATIA_ATUAL });
+                }
             }
         }
     });
@@ -3221,8 +3244,7 @@ pub static mut AUDIT_LATCH: bool = false;
                 let _ = mem.write(0xC000_0100, &tag);
             }
         }
-        // TEMP (serve check): FNV of the zImage served at 0x80008000
-        // (1 shot). Expected (NBH boot item): 0xa9d4b489. If it differs,
+    // TEMP (serve check): FNV of the zImage served at 0x80008000
         // the serve (pagina0) corrupted the zImage and the
         // decompressed kernel is born broken.
         static mut NFNV: u32 = 0;
@@ -3246,6 +3268,65 @@ pub static mut AUDIT_LATCH: bool = false;
                     off += n as u32;
                 }
                 eprintln!("SERVFNV ok={ok} fnv={h:#x} (expected 0xa9d4b489)");
+            }
+        }
+    });
+    // TEMP (ATAG cmdline expand, one-shot at handoff 0x88015244):
+    // force periodic ticks via `nohz=off highres=off` (retire the
+    // host re-arm): the CMDLINE tag has only 4 free bytes but the
+    // suffix needs 22. Shift the tail ([0x144..NONE] inclusive)
+    // down 32 bytes, grow CMDLINE 75->83 words, append. The kernel
+    // walks tags sequentially so absolute offsets don't matter.
+    // Applies to VA src, PA mirror, and VA kernel copy.
+    cpu.trap_pc_mem(0x8801_5244, move |mem, _regs| {
+        static mut NAT: u32 = 0;
+        unsafe {
+            if NAT < 1 {
+                NAT += 1;
+                let sufixo = b" nohz=off highres=off";
+                // Locate CMDLINE tag and list end.
+                let (mut coff, mut csz) = (0u32, 0u32);
+                let (mut fim, mut off) = (0u32, 0u32);
+                for _ in 0..32 {
+                    let base = 0x8000_0100u32.wrapping_add(off);
+                    let sz = mem.read_u32(base).unwrap_or(0);
+                    let id = mem.read_u32(base.wrapping_add(4)).unwrap_or(0);
+                    eprintln!("ATAG off={off:#x} size={sz} id={id:#x}");
+                    if sz == 0 || id == 0 || off > 0x800 {
+                        fim = off + 8;
+                        break;
+                    }
+                    if id == 0x5441_0009 {
+                        coff = off;
+                        csz = sz;
+                    }
+                    off += sz * 4;
+                }
+                if csz == 75 {
+                    // Read tail [coff_end .. fim), shift +32, grow tag.
+                    let ini = 0x8000_0100u32.wrapping_add(coff + csz * 4);
+                    let mut cauda = vec![0u8; (fim - (coff + csz * 4)) as usize];
+                    let ok = mem.read(ini, cauda.len() as u32).map(|s| cauda.copy_from_slice(s)).is_ok();
+                    // Current string (for the append base).
+                    let cap0 = (csz as usize) * 4 - 8;
+                    let mut cur = vec![0u8; cap0.min(512)];
+                    let okr = mem.read(0x8000_0100 + coff + 8, cur.len() as u32).map(|s| cur.copy_from_slice(s)).is_ok();
+                    let fim0 = cur.iter().position(|&c| c == 0).unwrap_or(cur.len());
+                    let mut nova = cur[..fim0].to_vec();
+                    nova.extend_from_slice(sufixo);
+                    nova.push(0);
+                    eprintln!("ATAGCMD cap0={cap0} len={fim0} ok={okr} newlen={} tailbytes={} okread={ok}", nova.len() - 1, cauda.len());
+                    if ok && okr && nova.len() <= (csz as usize + 8) * 4 - 8 {
+                        // Shift tail down 32 B in all three mappings,
+                        // grow CMDLINE 75 -> 83 words, write new string.
+                        for b in [0x8000_0100u32, 0x1000_0100, 0xC000_0100] {
+                            let _ = mem.write_u32(b + coff, csz + 8);
+                            let _ = mem.write(b + coff + csz * 4 + 32, &cauda);
+                            let w = mem.write(b + coff + 8, &nova).is_ok();
+                            eprintln!("ATAGSFT base={b:#x} w={w}");
+                        }
+                    }
+                }
             }
         }
     });
@@ -3614,15 +3695,44 @@ pub static mut AUDIT_LATCH: bool = false;
                     if let Ok(v) = cpu.read_u32(0xB1D0_0018) {
                         let _ = cpu.write_u32(0xB1D0_0018, v | 0x8000);
                     }
-                    // TEMP (forced unmask, one-shot at f=100000): the wall is
-                    // a masked idle with no unmask path executing. Clear I
-                    // once and see if ticks/ISR/reprogram resume (which
-                    // would prove masking is the whole wall vs deeper
-                    // breakage). Logs loudly.
-                    if fatia == 100000 {
+                    // TEMP (periodic kick, every 100 slices from f=100k):
+                    // the wall is a masked idle with frozen MATCH and a
+                    // consumed one-shot latch — nothing unmasks or
+                    // reprograms ever again. Force the tick: if MATCH
+                    // is stale (<= COUNT+100), plant COUNT+327; point
+                    // dev->event_handler (dev+0x2C) at
+                    // tick_handle_periodic (0xC00650DC) — the registered
+                    // handler is hrtimer_interrupt (oneshot/NO_HZ),
+                    // whose ISR runs but never programs anything;
+                    // unmask; mark dirty so the very next loop top
+                    // delivers. If the periodic path runs (do_timer,
+                    // scheduler ticks, softirqs, timer wheel), the
+                    // msleep waiter wakes and boot proceeds; then
+                    // retire the kick (or replace with nohz=off).
+                    if fatia >= 100000 && fatia % 100 == 0 {
+                        let tm = cpu.read_u32(0xE000_1000).unwrap_or(0);
+                        let tc = cpu.read_u32(0xE000_1004).unwrap_or(0);
+                        // Plant when MATCH is stale (behind COUNT) or only
+                        // just ahead: MATCH <= COUNT+100 covers both (no
+                        // wrapping-subtlety: values are far from 2^32).
+                        // A stale MATCH means no edge has fired for a
+                        // whole tick and the latch is consumed.
+                        if tm <= tc.wrapping_add(100) {
+                            let _ = cpu.write_u32(0xE000_1000, tc.wrapping_add(327));
+                        }
+                        let _ = cpu.write_u32(0xC02A_43C0 + 0x2C, 0xC006_50DC);
                         let (_, cpsr_antes, _, _) = cpu.estado_completo();
-                        cpu.set_cpsr(cpsr_antes & !0x80);
-                        eprintln!("FORCA-IRQ f={fatia} cpsr {cpsr_antes:#x} -> {:#x}", cpsr_antes & !0x80);
+                        if cpsr_antes & 0x80 != 0 {
+                            cpu.set_cpsr(cpsr_antes & !0x80);
+                        }
+                        cpu.marca_timer_sujo();
+                        static mut NKICK: u32 = 0;
+                        unsafe {
+                            if NKICK < 3 {
+                                NKICK += 1;
+                                eprintln!("KICK f={fatia} MATCH was {tm:#x} vs COUNT {tc:#x}, I was {}", (cpsr_antes >> 7) & 1);
+                            }
+                        }
                     }
                     // the post-wall loop (if any) needs fine granularity
                     // to show repetition vs linear walk. Cap 400

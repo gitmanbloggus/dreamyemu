@@ -5662,6 +5662,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeebx-sdl"
+version = "0.4.2"
+dependencies = [
+ "sdl2",
+ "zeebx",
+]
+
+[[package]]
 name = "zeebx-standalone-qt"
 version = "0.4.2"
 dependencies = [

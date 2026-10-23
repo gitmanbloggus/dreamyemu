@@ -2,70 +2,123 @@
 //!
 //! Goal: see SPL logs as early as possible. The SPL prints through a small
 //! chain, confirmed by disassembly (`-b binary -m arm`, file offsets ==
-//! pre-MMU physical addresses):
+//! pre-MMU physical addresses; post-MMU the same code runs at `+0x88000000`):
 //!
 //! ```text
 //! caller -> 0x1968 (printf-like format into buffer at [0x1C38] == 0x882A20DC)
-//!   -> 0x18D4 (emit dispatch on channel state)
-//!     -> 0x3890 (fan-out by channel; 3..5 byte-wise, 6 bulk via 0x333B8)
+//!   -> 0x18D4 (emit dispatch on channel state A [0x882A1CD0] / B [0x882A9584])
+//!     -> 0x3890 (fan-out: drops channels 0-2, 3..5 byte-wise, 6 bulk via 0x333B8)
 //!       -> 0x3814 (putc: r0 = channel, r1 = byte)
 //!         -> 0x40A4 (per-channel write into RAM ring buffers)
 //! ```
 //!
-//! `0x40A4` never touches MMIO itself: for channels 3..5 it enqueues into a
-//! ring (table at `0x882A94FC`, 16 bytes/channel, 4 KiB data buffers) and
-//! polls RAM flags. The hardware drain (UART/USB registers) is a separate,
-//! not-yet-traced consumer — see UNKNOWN below.
+//! Provenance: ARM disassembly of the SPL blob at those file offsets. Path B
+//! of the `0x18D4` dispatch (`[0x882A1CD0] == 2` -> `mov r0, #3`, direct
+//! channel-3 byte output) is additionally proven live: forcing it in the
+//! `spl_vivo_primeiro_byte_na_serial` frontier test delivers the first byte
+//! (`b'+'`, start of the `+dmov…` family) to the `PUTC` trap on channel 3.
 //!
-//! Bring-up strategy: trap `PUTC_ADDR` in the CPU backend, feed `(r0, r1)`
-//! into `SerialTap`, and let execution continue. No hardware model needed to
-//! read the first logs. The real UART model comes later, once the drain side
-//! is traced.
+//! Trap `PUTC_ADDR_POS_MMU` (`0x88003814`), not pre-MMU `0x3814`: the SPL
+//! enables the MMU before printing anything, so all observed output happens
+//! at the VA. The same frontier test pins this.
+//!
+//! `0x40A4` never touches MMIO itself. Per byte it polls two RAM flags on
+//! the channel's device struct: `+8` TX-ready (spins at `0x880040E4` while
+//! clear; the frontier stub models "always ready") and `+20`, which selects
+//! the write mode — set means direct-TX (returns on TX-complete, stubbed at
+//! device `+0x14`), clear means ring-enqueue (re-enqueues until the host
+//! drains). Provenance: disassembly of `0x40A4` and its `0x40D4..F8` poll;
+//! behavior confirmed live by the frontier stubs (`0xB2800008 = 1`,
+//! `0xB2800014 = 1`, `+20 == 0`).
+//!
+//! Ring layout, decoded from `0x88003DD4` (evidence, not hypothesis): the
+//! table at `0x882A94FC` holds 16-byte slots (`channel << 4`); data bytes
+//! land at `0x882A24FC + (channel << 12) + write_idx` — the pool holds the
+//! data-area base address itself (used directly, never dereferenced), so no
+//! pointer plant is needed or valid there. Slot fields: `+0` read index,
+//! `+4` write index (wraps at `0x1000`), `+8` full/blocked flag, `+12`
+//! ready. Ring init `0x3CEC` zeroes `+0/+4/+8` and sets `+12 = 1`
+//! (`0x3D28` returns `+12`, `0x3D50` returns `+8`). An earlier harness
+//! revision mistook the base for an indirection and planted/stubbed around
+//! it; the live run plus agent D's pool scan corrected this — see the
+//! `b2a00c10` discovery test history.
+//!
+//! Bring-up strategy: trap `PUTC_ADDR_POS_MMU` in the CPU backend, feed
+//! `(r0, r1)` into `SerialTap`, and let execution continue. No hardware
+//! model needed to read the first logs. The real UART model comes later,
+//! once the drain side is traced.
 //!
 //! Fallback with zero backend support: after each run slice, read the ring
 //! table (`RING_TABLE`) and `FORMAT_BUF` straight out of guest RAM and drain
-//! host-side with `anel_bytes_novos`. If the SPL ever spins on a full buffer
-//! (`0x40A4` polls RAM flags at device `+8`/`+20`), the host must advance the
-//! read index — same helper, applied as a write.
+//! host-side with `anel_bytes_novos`. If the SPL spins on a full buffer
+//! (`0x40A4` polls RAM flags at device `+8`/`+20`), the host must advance
+//! the read index — same helper, applied as a write. This per-slice drain is
+//! implemented inline in the `b2a00c10` discovery test (working) but is not
+//! yet a reusable harness.
 //!
-//! UNKNOWN (do not harden): which channel is UART vs USB; what the drain
-//! consumer is and which MMIO it writes; meaning of the `0x882A1254/58/5C`
-//! device structs. Channel 6 routing to `0x333B8` smells like USB bulk, but
-//! that is a guess from call shape, not evidence.
+//! UNKNOWN (do not harden): which channel is UART vs USB; who the drain
+//! consumer is and which MMIO it writes; who fills the `0x882A1254/58/5C`
+//! device structs (their init is untraced). Channel 6 routing to `0x333B8`
+//! smells like USB bulk, but that is a guess from call shape, not evidence.
 
 /// `printf`-like formatter entry. `r0` = format string (VA in `0x8806xxxx`).
 pub const PRINT_FORMAT: u32 = 0x1968;
-/// Emit dispatch. Reads channel state, calls into `CH_WRITE` / bulk path.
+/// Emit dispatch. Reads channel state words A `[0x882A1CD0]` and B
+/// `[0x882A9584]`; path B (`[A] == 2`) emits direct channel-3 bytes.
+/// Provenance: disassembly of `0x18D4`; path B proven live by the
+/// `spl_vivo_primeiro_byte_na_serial` frontier test.
 pub const PRINT_EMIT: u32 = 0x18D4;
 /// Channel fan-out write. `r0` = channel, `r1` = ptr, `r2` = len.
+/// Drops channels 0-2, byte-writes 3-5 via `PUTC_ADDR`, channel 6 bulk via
+/// `0x333B8`. Provenance: disassembly of `0x3890`.
 pub const CH_WRITE: u32 = 0x3890;
 /// Per-byte output. **`r0` = channel, `r1` = byte. Trap here.**
+///
+/// Pre-MMU address (file offset = physical). All observed output happens
+/// post-MMU, where the same code runs at `PUTC_ADDR_POS_MMU`: trap the alias
+/// the code actually executes at. The `spl_vivo_primeiro_byte_na_serial`
+/// frontier test pins this (first byte `b'+'` arrives on channel 3).
 pub const PUTC_ADDR: u32 = 0x3814;
-/// Per-channel ring-buffer write behind `PUTC_ADDR`.
+/// Post-MMU virtual address of `PUTC_ADDR` (`RAM_VIRTUAL_BASE + PUTC_ADDR`).
+/// The SPL enables the MMU before printing anything, so this is the address
+/// a PC trap must watch.
+pub const PUTC_ADDR_POS_MMU: u32 = 0x8800_3814;
+/// Per-channel ring-buffer write behind `PUTC_ADDR`. Polls device `+8`
+/// (TX-ready) and selects direct-TX vs ring-enqueue by device `+20`.
+/// Provenance: disassembly of `0x40A4`; stub behavior confirmed live by the
+/// frontier tests.
 pub const CH_PUTC: u32 = 0x40A4;
 /// Ring-buffer table, 16 bytes per channel (indexed `channel << 4`).
+/// Decoded from `0x88003DD4`; slot fields documented on `ANEL_LEITURA`.
 pub const RING_TABLE: u32 = 0x882A_94FC;
-/// Pointer (in RAM) to the 4 KiB-per-channel data region base.
-/// `0x3DD4` loads it from here on every byte: data byte lands at
-/// `[DATA_BASE_PTR] + (channel << 12) + write_idx`.
-pub const DATA_BASE_PTR: u32 = 0x882A_24FC;
+/// Base address (in RAM) of the 4 KiB-per-channel ring data region.
+/// `0x3DD4` loads pools holding this address on every byte; data lands at
+/// `DATA_BASE + (channel << 12) + write_idx`. It is the area itself, not an
+/// indirection: nothing dereferences it to find another pointer.
+pub const DATA_BASE: u32 = 0x882A_24FC;
 /// `printf` scratch buffer. `0x1968` formats the line here (`[0x1C38]`), then
 /// `0x18D4` emits it — reading this after a slice shows the last line even
 /// with no trap and no drain.
 pub const FORMAT_BUF: u32 = 0x882A_20DC;
-/// Global holding the active output channel (default 0).
+/// Global holding the active output channel (default 0). Read on the print
+/// path; dumped live in the discovery test's slot list. Distinct from the
+/// emit-dispatch state words A `[0x882A1CD0]` / B `[0x882A9584]`.
 pub const CANAL_ATIVO: u32 = 0x882A_0001;
 /// Pointers to the channel 3/4/5 device structs (RAM, filled at init).
+/// UNKNOWN: who fills them is untraced — finding their init is the way to
+/// trace the hardware drain. Polled offsets: `+8` TX-ready, `+20`
+/// direct-TX select / TX-complete.
 pub const DISPOSITIVO_C3: u32 = 0x882A_1254;
 pub const DISPOSITIVO_C4: u32 = 0x882A_1258;
 pub const DISPOSITIVO_C5: u32 = 0x882A_125C;
 
 /// Ring entry field offsets within one 16-byte `RING_TABLE` slot.
 ///
-/// From `0x3CEC` (init: `+0/+4/+8 = 0`, `+12 = 1`), `0x3D28` (returns `+12`),
-/// `0x3D50` (returns `+8`), `0x3DD4` (write path: `+4` increments, wraps at
-/// `0x1000`; `+0` compared against it). Mapping `+0 = read index`,
-/// `+4 = write index` is an inference from that comparison, not a fact.
+/// Decoded from `0x88003DD4` (evidence): `+0` read index, `+4` write index
+/// (increments per byte, wraps at `0x1000`), `+8` full/blocked flag
+/// (returned by `0x3D50`; the guest spins while set), `+12` ready flag
+/// (returned by `0x3D28`). Ring init `0x3CEC` zeroes `+0/+4/+8` and sets
+/// `+12 = 1`.
 pub const ANEL_LEITURA: usize = 0;
 pub const ANEL_ESCRITA: usize = 4;
 pub const ANEL_TAMANHO_DADOS: usize = 0x1000;
@@ -107,7 +160,8 @@ pub enum Canal {
     C3,
     C4,
     C5,
-    /// Channel 6: bulk path via `0x333B8`. Purpose unknown (USB guess).
+    /// Channel 6: bulk path via `0x333B8`. The call edge (CH_WRITE -> 0x333B8)
+    /// is evidence; the USB-bulk assignment is a guess from call shape.
     Bulk6,
     /// Anything else: not observed on this path.
     Outro(u32),
@@ -129,7 +183,7 @@ impl Canal {
 
 /// Host-side sink for tapped `(channel, byte)` pairs.
 ///
-/// The backend traps `PUTC_ADDR`, reads `r0`/`r1`, and calls `byte()`.
+/// The backend traps `PUTC_ADDR_POS_MMU`, reads `r0`/`r1`, and calls `byte()`.
 /// Bytes accumulate per channel; `linhas()` returns complete `\n`-terminated
 /// lines (the SPL ends most messages with `\n`), leaving partial lines
 /// buffered. Keeps raw bytes (the SPL is ASCII in practice; no decoding

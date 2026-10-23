@@ -1,25 +1,26 @@
-//! Memória do guest.
+//! Guest memory.
 //!
-//! O mapa é montado por regiões nomeadas em vez de um bloco plano de 4 GiB: assim um acesso
-//! fora do mapa vira erro identificável (e é justamente isso que o trampolim de vtables vai
-//! usar para detectar chamadas a APIs do BREW).
+//! The map is built from named regions instead of a flat 4 GiB block: that way an access
+//! outside the map becomes an identifiable error (and that is exactly what the vtable
+//! trampoline will use to detect calls to BREW APIs).
 
-// Removido assim que o núcleo estiver ligado ao loop principal.
+// Removed once the core is wired into the main loop.
 #![allow(dead_code)]
 
+use std::cell::Cell;
 use std::fmt;
 
-/// Uma faixa contígua de memória do guest.
+/// One contiguous range of guest memory.
 #[derive(Debug)]
 pub struct Region {
-    /// Nome usado em logs e mensagens de erro.
+    /// Name used in logs and error messages.
     pub name: &'static str,
-    /// Endereço inicial no espaço do guest.
+    /// Start address in guest address space.
     pub base: u32,
     pub bytes: Vec<u8>,
     pub writable: bool,
-    /// Se o processador pode buscar instruções aqui. Só a página nula não pode: ler dela é
-    /// o que o console tolera, saltar para ela é erro que queremos ver.
+    /// Whether the processor may fetch instructions here. Only the null page may not: reading
+    /// from it is what the console tolerates, jumping to it is an error we want to see.
     pub executavel: bool,
 }
 
@@ -35,11 +36,11 @@ impl Region {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemError {
-    /// Nenhuma região cobre o endereço pedido.
+    /// No region covers the requested address.
     Unmapped { addr: u32, len: u32 },
-    /// A região existe mas é somente leitura.
+    /// The region exists but is read-only.
     ReadOnly { addr: u32, region: &'static str },
-    /// Duas regiões se sobrepõem — erro de montagem do mapa, não do guest.
+    /// Two regions overlap — a map setup error, not a guest error.
     Overlap { name: &'static str, base: u32 },
 }
 
@@ -69,7 +70,19 @@ impl std::error::Error for MemError {}
 
 #[derive(Debug, Default)]
 pub struct GuestMemory {
+    /// Insertion order (public contract: `regions()[0]` is the module,
+    /// saves serialize in this order, tests document it). Do NOT reorder.
     regions: Vec<Region>,
+    /// Index into `regions`, sorted by `base`: the binary search uses
+    /// this vector instead of scanning `regions`. Maintained in `map`
+    /// (sorted insertion); indices into `regions` are stable
+    /// (push only, never remove/reorder).
+    ordem: Vec<usize>,
+    /// MRU of the last hit (base, end, index into `regions`): sequential
+    /// fetch and stack hit the same region every time; O(1) in the common
+    /// case. Stable index (see above); checking the base guards against
+    /// any inconsistency.
+    ultimo: Cell<Option<(u32, u32, usize)>>,
 }
 
 impl GuestMemory {
@@ -77,7 +90,7 @@ impl GuestMemory {
         Self::default()
     }
 
-    /// Mapeia uma nova região. Falha se ela colidir com alguma já existente.
+    /// Maps a new region. Fails if it collides with an existing one.
     pub fn map(
         &mut self,
         name: &'static str,
@@ -88,7 +101,7 @@ impl GuestMemory {
         self.map_com_execucao(name, base, bytes, writable, true)
     }
 
-    /// Como [`GuestMemory::map`], dizendo também se a região pode ser executada.
+    /// Like [`GuestMemory::map`], also stating whether the region may be executed.
     pub fn map_com_execucao(
         &mut self,
         name: &'static str,
@@ -105,6 +118,14 @@ impl GuestMemory {
         if collides {
             return Err(MemError::Overlap { name, base });
         }
+        // Push preserves insertion order (contract); the base-sorted
+        // index goes into `ordem`. MRU invalidated for safety
+        // (indices stay valid, but it is cheap).
+        let idx = self.regions.len();
+        let pos = self
+            .ordem
+            .partition_point(|&i| (self.regions[i].base as u64) < base as u64);
+        self.ordem.insert(pos, idx);
         self.regions.push(Region {
             name,
             base,
@@ -112,10 +133,11 @@ impl GuestMemory {
             writable,
             executavel,
         });
+        self.ultimo.set(None);
         Ok(())
     }
 
-    /// Mapeia uma região zerada e gravável — pilha, heap, framebuffer.
+    /// Maps a zeroed writable region — stack, heap, framebuffer.
     pub fn map_zeroed(
         &mut self,
         name: &'static str,
@@ -125,13 +147,43 @@ impl GuestMemory {
         self.map(name, base, vec![0; len], true)
     }
 
-    /// Se há código que possa ser buscado em `addr`.
+    /// Whether code may be fetched at `addr`.
     pub fn executavel(&self, addr: u32) -> bool {
         self.region_for(addr, 4).is_some_and(|r| r.executavel)
     }
 
     fn region_for(&self, addr: u32, len: u32) -> Option<&Region> {
-        self.regions.iter().find(|r| r.contains(addr, len))
+        // MRU: the common case (sequential fetch, stack) hits first try.
+        if let Some((base, fim, idx)) = self.ultimo.get() {
+            if addr >= base && addr.checked_add(len).is_some_and(|a| a <= fim) {
+                if let Some(r) = self.regions.get(idx) {
+                    if r.base == base {
+                        return Some(r);
+                    }
+                }
+            }
+        }
+        // Binary search over the base-sorted index: the candidate is the
+        // last region with base <= addr (no overlap, at most one
+        // contains addr).
+        let n = self
+            .ordem
+            .partition_point(|&i| self.regions[i].base <= addr);
+        let &idx = self.ordem.get(n.wrapping_sub(1))?;
+        let r = self.regions.get(idx)?;
+        if !r.contains(addr, len) {
+            return None;
+        }
+        let fim = r.base.wrapping_add(r.bytes.len() as u32);
+        self.ultimo.set(Some((r.base, fim, idx)));
+        Some(r)
+    }
+
+    /// For fetch (`busca`): the region covers `[addr, addr+len)` AND allows
+    /// execution. Replaces the `regions().iter().any(...)` scan the
+    /// interpreter used to do per instruction (same bottleneck as `region_for`).
+    pub fn busca_permitida(&self, addr: u32, len: u32) -> bool {
+        self.region_for(addr, len).is_some_and(|r| r.executavel)
     }
 
     fn region_for_mut(&mut self, addr: u32, len: u32) -> Option<&mut Region> {
@@ -162,10 +214,11 @@ impl GuestMemory {
         Ok(())
     }
 
-    /// Preenche diretamente as regiões, sem criar um buffer intermediário.
+    /// Fills the regions directly, without creating an intermediate buffer.
     ///
-    /// Valida o intervalo inteiro antes de tocar nos bytes. Assim uma falha na segunda região
-    /// não deixa a primeira alterada sem o chamador invalidar o cache JIT correspondente.
+    /// Validates the whole range before touching any bytes. That way a failure in the second
+    /// region does not leave the first one modified without the caller invalidating the
+    /// corresponding JIT cache.
     pub fn fill(&mut self, addr: u32, value: u8, len: u32) -> Result<(), MemError> {
         let inicio = u64::from(addr);
         let fim = inicio + u64::from(len);
@@ -194,7 +247,7 @@ impl GuestMemory {
         cursor = inicio;
         while cursor < fim {
             let onde = cursor as u32;
-            let region = self.region_for_mut(onde, 1).expect("intervalo já validado");
+            let region = self.region_for_mut(onde, 1).expect("range already validated");
             let inicio_na_regiao = (onde - region.base) as usize;
             let passo = ((fim - cursor) as usize).min(region.bytes.len() - inicio_na_regiao);
             region.bytes[inicio_na_regiao..inicio_na_regiao + passo].fill(value);

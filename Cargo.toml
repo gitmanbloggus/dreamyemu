@@ -6,6 +6,7 @@ members = [
     "frontends/libretro",
     "frontends/android",
     "frontends/headless",
+    "frontends/sdl",
     "frontends/ios",
 ]
 resolver = "3"
@@ -32,6 +33,12 @@ path = "src/lib.rs"
 # linka nada disso: vídeo, áudio e entrada chegam por callback do frontend.
 [features]
 default = ["desktop"]
+# O backend interpretador, sem JIT e sem dependência de host: o único que o
+# SPL do Dream aceita (o Dynarmic da árvore aborta no CP15 do SPL — o run
+# vivo do Dynarmic está pinado como ignorado por isso). Compilado nos testes
+# e no wasm32/iOS por padrão; o `zeebx-sdl` (Dream) pede explicitamente.
+# Não muda o `BackendPadrao` (desktop continua no JIT).
+interpretador = []
 desktop = [
     # A UI desktop usa o rasterizador na placa: o desktop implica `gpu`.
     "gpu",

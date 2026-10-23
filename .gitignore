@@ -1,11 +1,15 @@
 # ROMs / conteúdo de jogos — nunca versionar
 roms/
 
+# Blobs de boot de terceiros (SPL de referência para reversing) — nunca versionar
+tests/spl/
+
 # Material de terceiros espelhado (docs Qualcomm/Zeebo, SDKs, dumps de firmware, clones)
 docs/vendor/
 
 # Build
 build/
+dist/
 cmake-build-*/
 *.o
 *.a

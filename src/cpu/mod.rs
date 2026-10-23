@@ -1,26 +1,27 @@
-//! Abstração do núcleo ARM.
+//! The ARM core abstraction.
 //!
-//! O emulador nunca fala com um núcleo concreto: fala com [`CpuBackend`]. A implementação padrão é
-//! o `dynarmic`, que recompila blocos A32/Thumb para código nativo do host.
+//! The emulator never talks to a concrete core: it talks to [`CpuBackend`]. The default
+//! implementation is `dynarmic`, which recompiles A32/Thumb blocks to host native code.
 
-// Removido assim que o núcleo estiver ligado ao loop principal.
+// Removed once the core is wired into the main loop.
 #![allow(dead_code)]
 
+pub mod desarma;
 pub mod mem;
 
 use crate::cpu::mem::GuestMemory;
 
-/// Registradores que o despacho de API precisa ler e escrever.
+/// Registers the API dispatcher needs to read and write.
 ///
-/// Segue a AAPCS: argumentos em `r0..r3` e o resto na pilha, retorno em `r0`.
+/// Follows the AAPCS: arguments in `r0..r3` and the rest on the stack, return value in `r0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reg {
     R0,
     R1,
     R2,
     R3,
-    /// `r4..r11` não entram na convenção de chamada, mas são onde o compilador guarda o `this`
-    /// e as variáveis vivas — sem eles não dá para reconstruir o contexto de uma falha.
+    /// `r4..r11` are not part of the calling convention, but they are where the compiler keeps
+    /// `this` and the live variables — without them the context of a fault cannot be rebuilt.
     R4,
     R5,
     R6,
@@ -35,122 +36,136 @@ pub enum Reg {
     Pc,
 }
 
-/// Por que a execução parou.
+/// Why execution stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopReason {
-    /// O guest saltou para o intervalo reservado às vtables do BREW — é uma chamada de API.
+    /// The guest jumped into the range reserved for BREW vtables — it is an API call.
     ApiCall { addr: u32 },
-    /// O guest retornou para o endereço-sentinela colocado em `lr` na entrada.
+    /// The guest returned to the sentinel address placed in `lr` on entry.
     Returned,
-    /// Acesso a memória não mapeada. `addr` é o endereço acessado, `pc` a instrução que tentou.
+    /// Access to unmapped memory. `addr` is the accessed address, `pc` the instruction that tried.
     MemoryFault { addr: u32, pc: u32 },
-    /// Instrução inválida, SWI ou outra exceção do núcleo.
+    /// Invalid instruction, SWI or other core exception.
     Exception { pc: u32 },
-    /// Estourou o orçamento de instruções da fatia.
+    /// Ran out of the slice's instruction budget.
     Budget,
 }
 
 pub trait CpuBackend {
-    /// Prepara o núcleo para executar com este mapa de memória.
+    /// Prepares the core to execute with this memory map.
     fn reset(&mut self, mem: &GuestMemory) -> Result<(), CpuError>;
 
     fn read_reg(&self, reg: Reg) -> u32;
     fn write_reg(&mut self, reg: Reg, value: u32);
 
-    /// Executa a partir de `pc` até parar, gastando no máximo `max_instructions`.
+    /// Executes from `pc` until stopping, spending at most `max_instructions`.
     fn run(&mut self, pc: u32, max_instructions: u64) -> Result<StopReason, CpuError>;
 
-    /// Lê memória do guest. Depois do `reset` a memória vive dentro do núcleo, então as
-    /// implementações de API precisam passar por aqui em vez de consultar o [`GuestMemory`].
-    /// Quantas instruções o guest já executou.
+    /// Reads guest memory. After `reset` the memory lives inside the core, so API
+    /// implementations must go through here instead of consulting the [`GuestMemory`].
+    /// How many instructions the guest has executed.
     ///
-    /// É o relógio do emulador: o tempo que o jogo enxerga vem daqui, e não do host, para que
-    /// duas execuções iguais deem o mesmo resultado.
+    /// It is the emulator's clock: the time the game sees comes from here, not from the host, so
+    /// that two identical runs give the same result.
     fn instructions(&self) -> u64;
 
-    /// Entradas no JIT, o tempo estimado dentro dele e quantas amostras sustentam a estimativa.
+    /// Entries into the JIT, the estimated time inside it, and how many samples back the estimate.
     ///
-    /// `None` quando o backend não tem entrada de JIT a separar — o interpretador não tem. Quem
-    /// usa isto quer a diferença entre o tempo dentro do núcleo e o tempo no despacho; ver
-    /// [`crate::cpu::dynarmic::DynarmicCpu::run`]. **O terceiro número é a honestidade da
-    /// medida:** zero amostras significa que o relógio não foi ligado, e aí só a contagem vale.
+    /// `None` when the backend has no JIT entry to separate — the interpreter has none. Users of
+    /// this want the difference between time inside the core and time in dispatch; see
+    /// [`crate::cpu::dynarmic::DynarmicCpu::run`]. **The third number is the honesty of the
+    /// measurement:** zero samples means the clock was never started, and then only the count is
+    /// meaningful.
     fn relato_do_jit(&self) -> Option<(u64, u64, u64)> {
         None
     }
 
-    /// Se o núcleo parou com o guest em modo Thumb.
+    /// Whether the core stopped with the guest in Thumb mode.
     ///
-    /// Serve para retomar um trecho interrompido: quem retoma passa o endereço com o bit 0
-    /// ligado, que é como o ARM diz "continue em Thumb". Sem isso, um jogo inteiro em Thumb —
-    /// o Zenonia, a série Extreme — voltaria decodificado como ARM.
-    /// O `CPSR`: os sinalizadores da última operação e o modo do processador.
+    /// Used to resume an interrupted stretch: whoever resumes passes the address with bit 0
+    /// set, which is how ARM says "continue in Thumb". Without this, a whole game in Thumb —
+    /// Zenonia, the Extreme series — would come back decoded as ARM.
+    /// The `CPSR`: the flags from the last operation and the processor mode.
     ///
-    /// **Sem isto um save state fica errado de um jeito difícil de ver.** A memória volta, o
-    /// programa volta, e as flags ficam as de outra execução: a comparação que o jogo fez antes de
-    /// salvar continua valendo, mas a decisão seguinte pode tomar o outro caminho. O Dynarmic
-    /// expõe isso por `get_cpsr`, e é por isso que o método não tem valor padrão: um
-    /// backend que não saiba dizer o `CPSR` tem de dizer isso, e não devolver zero em silêncio.
+    /// **Without this a save state goes wrong in a hard-to-see way.** Memory comes back, the
+    /// program comes back, and the flags stay those of another run: the comparison the game made
+    /// before saving still holds, but the next decision may take the other path. Dynarmic
+    /// exposes this via `get_cpsr`, and that is why the method has no default value: a
+    /// backend that cannot report the `CPSR` must say so, not silently return zero.
     fn cpsr(&self) -> u32;
 
-    /// Põe o `CPSR`. Ver [`CpuBackend::cpsr`].
+    /// Sets the `CPSR`. See [`CpuBackend::cpsr`].
     fn set_cpsr(&mut self, valor: u32);
 
-    /// Põe o contador de instruções, que é o **relógio virtual** do emulador.
+    /// Sets the instruction counter, which is the emulator's **virtual clock**.
     ///
-    /// Salvar o relógio e não o devolver deixaria o jogo depois do save state com outro tempo: os
-    /// `SetTimer`, o áudio por quadro e o limite de passos do andamento dependem dele.
+    /// Saving the clock and not restoring it would leave the game after the save state with a
+    /// different time: `SetTimer`, per-frame audio and the progress step limit depend on it.
     fn set_instructions(&mut self, valor: u64);
 
     fn em_thumb(&self) -> bool {
         false
     }
 
-    /// Arma um sinalizador de sujeira numa faixa: o hook o liga quando o guest escreve nela.
+    /// Arms a dirtiness flag on a range: the hook sets it when the guest writes there.
     ///
-    /// Sem isto, descobrir se o jogo mexeu numa superfície exige **ler a faixa inteira e
-    /// comparar byte a byte**. Medido na Z-Wheel: o `sync` do color buffer do pbuffer era
-    /// chamado 93 mil vezes em treze segundos, e a leitura mais a comparação somavam seis
-    /// segundos — mais de um terço de todo o tempo de API.
+    /// Without this, finding out whether the game touched a surface requires **reading the whole
+    /// range and comparing it byte by byte**. Measured on the Z-Wheel: the pbuffer color buffer
+    /// `sync` was called 93 thousand times in thirteen seconds, and the read plus the comparison
+    /// added up to six seconds — over a third of all API time.
     ///
-    /// O `id` identifica a faixa, e existe porque há **várias** ao mesmo tempo: o color buffer
-    /// do pbuffer e uma por superfície do jogo. Armar de novo com o mesmo `id` troca a faixa de
-    /// lugar, que é o que acontece quando um bitmap é reexposto com outro tamanho.
+    /// The `id` identifies the range, and it exists because there are **several** at once: the
+    /// pbuffer color buffer and one per game surface. Re-arming with the same `id` moves the
+    /// range, which is what happens when a bitmap is re-exposed with another size.
     ///
-    /// O padrão responde "sempre sujo", que é exatamente o comportamento anterior: um backend
-    /// que não saiba armar o hook continua correto, só não fica mais rápido.
+    /// The default answers "always dirty", which is exactly the previous behavior: a backend
+    /// that cannot arm the hook stays correct, it just does not get any faster.
     fn watch_dirty(&mut self, _id: u32, _base: u32, _len: u32) -> Result<(), CpuError> {
         Ok(())
     }
 
-    /// Desarma a faixa de `id`. Sem isto, a superfície de um bitmap já liberado continuaria
-    /// custando um hook em toda escrita do guest naquele endereço.
+    /// Disarms the range with `id`. Without this, the surface of an already freed bitmap would
+    /// keep costing one hook on every guest write to that address.
     fn unwatch_dirty(&mut self, _id: u32) {}
 
-    /// Lê **e limpa** o sinalizador de `id`. `true` quando o guest pode ter escrito desde a
-    /// última vez, e também quando não há faixa armada com esse `id` — na dúvida, sujo.
+    /// Reads **and clears** the flag for `id`. `true` when the guest may have written since the
+    /// last time, and also when there is no range armed under that `id` — when in doubt, dirty.
     fn take_dirty(&mut self, _id: u32) -> bool {
         true
     }
 
-    /// Liga o sinalizador das faixas vigiadas que cruzam `addr..addr+len`.
+    /// Sets the flag of the watched ranges crossing `addr..addr+len`.
     ///
-    /// A vigia só enxerga escrita **do guest**, e isso é o que se quer para as escritas do
-    /// próprio emulador. Mas um `MEMMOVE` que o jogo pede ao helper é escrita do jogo feita pelas
-    /// nossas mãos: a Z-Wheel compõe o palco 3D assim, copiando o pbuffer para os pixels do
-    /// bitmap de destino, e sem este aviso a superfície nunca importava a cópia — o palco ficava
-    /// cinza.
+    /// The watch only sees **guest** writes, and that is what is wanted for the emulator's own
+    /// writes. But a `MEMMOVE` the game asks of the helper is a game write done by our hands:
+    /// the Z-Wheel composes the 3D stage that way, copying the pbuffer into the destination
+    /// bitmap's pixels, and without this notice the surface would never import the copy — the
+    /// stage stayed gray.
     fn marca_sujo(&mut self, _addr: u32, _len: u32) {}
 
     fn read_mem(&self, addr: u32, buf: &mut [u8]) -> Result<(), CpuError>;
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), CpuError>;
 
-    /// Preenche `len` bytes com `valor`, sem alocar.
+    /// Maps a fresh zeroed region (bring-up use only).
     ///
-    /// Existe por causa de uma medição: o `memset` do guest é chamado em laço de espera, e a
-    /// implementação por `write_mem` **alocava um `Vec` do tamanho pedido em cada chamada**. No
-    /// Zeebo Extreme Rolima isso era 731 ms dos 1.149 ms gastos em chamadas de API — 63% —, para
-    /// 12 mil chamadas de limpeza. Aqui a limpeza vai em blocos de um buffer de pilha.
+    /// The Dream harness maps faulting MMIO pages on demand instead of
+    /// pre-declaring every window: on a `MemoryFault` it classifies the
+    /// address (section-table alias vs known suspect vs unknown) and maps a
+    /// zeroed page here, then resumes at the faulting PC. Repeats on the
+    /// same page mean "needs behavior, not memory" and stop the run.
+    /// Backends without support return `Err` (the run then treats the fault
+    /// as genuine); the interpretador forwards to its `GuestMemory`.
+    fn map_zeroed(&mut self, _name: &'static str, _base: u32, _len: usize) -> Result<(), CpuError> {
+        Err(CpuError("on-demand mapping not supported".into()))
+    }
+
+    /// Fills `len` bytes with `valor`, without allocating.
+    ///
+    /// Exists because of a measurement: the guest `memset` is called in a wait loop, and the
+    /// `write_mem` implementation **allocated a `Vec` of the requested size on every call**. In
+    /// Zeebo Extreme Rolima that was 731 ms of the 1,149 ms spent in API calls — 63% — for
+    /// 12 thousand clear calls. Here the clear goes in chunks of a stack buffer.
     fn fill_mem(&mut self, addr: u32, valor: u8, len: u32) -> Result<(), CpuError> {
         const BLOCO: usize = 4096;
         let pilha = [valor; BLOCO];
@@ -165,13 +180,13 @@ pub trait CpuBackend {
         Ok(())
     }
 
-    /// Zera `len` bytes da pilha do guest **sem** invalidar código do JIT.
+    /// Zeroes `len` bytes of the guest stack **without** invalidating JIT code.
     ///
-    /// Só para a sujeira de pilha (ver `Machine::gasta_a_pilha`): o intervalo está confinado à
-    /// pilha do jogo, onde nunca há código compilado, e sujar em toda chamada de API com a
-    /// invalidação junto custava 30% da velocidade no Crash Nitro Kart em corrida (de 385% para
-    /// 296% no `bench`, medido) — quase tudo no `jit_mut` e nos empréstimos da marcação, que
-    /// aqui sempre sai vazia. Fora da pilha, use o [`Self::fill_mem`], que invalida.
+    /// Only for stack dirt (see `Machine::gasta_a_pilha`): the range is confined to the game
+    /// stack, where there is never compiled code, and dirtying with the invalidation together on
+    /// every API call cost 30% of the speed in Crash Nitro Kart while racing (from 385% to
+    /// 296% in `bench`, measured) — almost all of it in `jit_mut` and the marking borrows, which
+    /// here always come out empty. Outside the stack, use [`Self::fill_mem`], which invalidates.
     fn suja_pilha(&mut self, addr: u32, len: u32) -> Result<(), CpuError> {
         self.fill_mem(addr, 0, len)
     }
@@ -186,20 +201,20 @@ pub trait CpuBackend {
         self.write_mem(addr, &value.to_le_bytes())
     }
 
-    /// Lê uma string terminada em zero. Para na primeira falha de acesso e no limite dado,
-    /// para que um ponteiro corrompido não vire leitura infinita.
-    /// Os bytes de uma string do guest, até o terminador — sem interpretar codificação.
+    /// Reads a zero-terminated string. Stops at the first access fault and at the given limit,
+    /// so that a corrupted pointer does not turn into an infinite read.
+    /// The bytes of a guest string, up to the terminator — without interpreting the encoding.
     ///
-    /// É esta a versão que as funções de string do C precisam. A conversão para `String` troca
-    /// cada byte inválido em UTF-8 por `U+FFFD`, que ocupa **três** bytes: `strlen("\x89PNG")`
-    /// devolveria 6 em vez de 4, e foi exatamente esse erro que fez o Bejeweled Twist rejeitar
-    /// os próprios PNGs.
+    /// This is the version the C string functions need. Converting to `String` replaces each
+    /// byte that is invalid UTF-8 with `U+FFFD`, which takes **three** bytes: `strlen("\x89PNG")`
+    /// would return 6 instead of 4, and that was exactly the error that made Bejeweled Twist
+    /// reject its own PNGs.
     fn read_cbytes(&self, addr: u32, max_len: usize) -> Vec<u8> {
-        /// Quanto ler de uma vez. Cada leitura é uma chamada ao núcleo, e byte a byte isso
-        /// custava caro onde mais dói: o `strtoul` pede até `MAX_STRING` bytes e o Turma da
-        /// Mônica o chama cem mil vezes, o que dava centenas de milhões de chamadas só para
-        /// converter números. Sessenta e quatro bytes cobrem a string curta típica numa
-        /// leitura só.
+        /// How much to read at once. Each read is a call into the core, and byte by byte that
+        /// cost a lot where it hurts most: `strtoul` asks for up to `MAX_STRING` bytes and Turma
+        /// da Mônica calls it a hundred thousand times, which came to hundreds of millions of
+        /// calls just to convert numbers. Sixty-four bytes cover the typical short string in a
+        /// single read.
         const BLOCO: usize = 64;
 
         let mut bytes = Vec::new();
@@ -208,8 +223,8 @@ pub trait CpuBackend {
             let base = addr + bytes.len() as u32;
             let mut buf = vec![0u8; quer];
             if self.read_mem(base, &mut buf).is_err() {
-                // O bloco pode cruzar o fim da região mapeada, e aí a leitura inteira falha
-                // mesmo havendo bytes válidos antes. Byte a byte só neste caso.
+                // The block may cross the end of the mapped region, and then the whole read fails
+                // even when there are valid bytes before it. Byte by byte only in this case.
                 for offset in 0..quer {
                     let mut byte = [0u8; 1];
                     if self.read_mem(base + offset as u32, &mut byte).is_err() || byte[0] == 0 {
@@ -230,29 +245,30 @@ pub trait CpuBackend {
         bytes
     }
 
-    /// A mesma string, interpretada como texto.
+    /// The same string, interpreted as text.
     fn read_cstring(&self, addr: u32, max_len: usize) -> String {
         latin1_decode(&self.read_cbytes(addr, max_len))
     }
 }
 
-/// Interpreta bytes de uma string `char` do BREW como texto.
+/// Interprets the bytes of a BREW `char` string as text.
 ///
-/// O `char` do BREW é ISO-8859-1: um byte, um caractere. Ler como UTF-8 destruía tudo que
-/// tivesse acento — `0xE7` não é UTF-8 válido, virava `U+FFFD` e voltava para a memória do
-/// jogo como três bytes de lixo. É por isso que a acentuação saía quebrada na tela do
-/// Resident Evil 4 e do Double Dragon, que passam o texto por `strtowstr`.
+/// BREW `char` is ISO-8859-1: one byte, one character. Reading it as UTF-8 destroyed everything
+/// with an accent — `0xE7` is not valid UTF-8, it became `U+FFFD` and went back into game memory
+/// as three bytes of garbage. That is why accents came out broken on the Resident Evil 4 and
+/// Double Dragon screens, which pass text through `strtowstr`.
 ///
-/// O mapeamento é direto porque os 256 primeiros pontos do Unicode *são* o ISO-8859-1, e por
-/// isso a ida e a volta nunca perdem byte nenhum.
+/// The mapping is direct because the first 256 Unicode code points *are* ISO-8859-1, which is
+/// why the round trip never loses a single byte.
 pub fn latin1_decode(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| b as char).collect()
 }
 
-/// O caminho de volta: cada caractere vira um byte.
+/// The way back: each character becomes one byte.
 ///
-/// O que não couber em um byte não veio da memória do guest e não tem representação lá; vira
-/// `?`, que é o que a libc faz com um caractere fora da página de código.
+/// Anything that does not fit in one byte did not come from guest memory and has no
+/// representation there; it becomes `?`, which is what libc does with a character outside the
+/// code page.
 pub fn latin1_encode(text: &str) -> Vec<u8> {
     text.chars()
         .map(|c| u8::try_from(c as u32).unwrap_or(b'?'))
@@ -273,42 +289,42 @@ impl std::error::Error for CpuError {}
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub mod dynarmic;
 
-/// Interpretador A32/T32. Entra onde o JIT não pode emitir código que o processo execute: no
-/// `wasm32` o navegador não salta para o bloco, e no iOS o kernel recusa a página executável.
-/// Também entra nos testes do próprio arquivo. O desktop continua no JIT.
-#[cfg(any(test, target_arch = "wasm32", target_os = "ios"))]
+/// A32/T32 interpreter. Steps in where the JIT cannot emit code the process can execute: on
+/// `wasm32` the browser does not jump into the block, and on iOS the kernel refuses the
+/// executable page. Also used by this file's own tests. The desktop stays on the JIT.
+#[cfg(any(test, target_arch = "wasm32", target_os = "ios", feature = "interpretador"))]
 pub mod interpretador;
 
-/// O alias que o resto do código usa para pedir "o backend padrão".
+/// The alias the rest of the code uses to ask for "the default backend".
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub type BackendPadrao = dynarmic::DynarmicCpu;
 #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 pub type BackendPadrao = interpretador::Interpretador;
 
-// As constantes da faixa de vtables do BREW são parte do contrato entre o backend e o despachante.
+// The BREW vtable-range constants are part of the contract between the backend and the dispatcher.
 pub use faixas_do_brew::{API_BASE, API_SIZE, RETURN_MAGIC};
 
 
-/// As três constantes da faixa reservada às vtables do BREW.
+/// The three constants of the range reserved for BREW vtables.
 ///
-/// Ficam num módulo próprio porque são **do contrato**, não de um backend: é assim que o despachante
-/// Rust descobre qual API o jogo chamou.
+/// They live in their own module because they belong to the **contract**, not to one backend:
+/// that is how the Rust dispatcher finds out which API the game called.
 mod faixas_do_brew {
-    /// Base da faixa reservada às vtables do BREW.
+    /// Base of the range reserved for BREW vtables.
     pub const API_BASE: u32 = 0xf000_0000;
-    /// Tamanho da faixa.
+    /// Size of the range.
     pub const API_SIZE: u32 = 0x0100_0000;
-    /// Endereço-sentinela que o `lr` recebe para marcar "voltou da API".
+    /// Sentinel address that `lr` receives to mark "returned from the API".
     pub const RETURN_MAGIC: u32 = 0xfff0_0000;
 }
 
-/// Quanto do log por semihosting fica guardado, em bytes.
+/// How much of the semihosting log is kept, in bytes.
 const MAX_SEMIHOSTING: usize = 256 * 1024;
 
-/// Mantém o log por semihosting dentro de [`MAX_SEMIHOSTING`], jogando fora a metade mais antiga.
+/// Keeps the semihosting log within [`MAX_SEMIHOSTING`], discarding the oldest half.
 ///
-/// Era uma `String` que só crescia: o Peggle e o Zuma escrevem por ali a sessão inteira, e o
-/// relatório clona o texto todo a cada quadro em que a janela de log está aberta.
+/// It was a `String` that only grew: Peggle and Zuma write through it for the whole session,
+/// and the report clones the entire text on every frame while the log window is open.
 pub(crate) fn apara_semihosting(texto: &mut String) {
     if texto.len() <= MAX_SEMIHOSTING {
         return;
@@ -324,8 +340,8 @@ pub(crate) fn apara_semihosting(texto: &mut String) {
 mod tests {
     use super::*;
 
-    /// O texto acentuado tem de sobreviver à ida e à volta byte a byte: é isso que o jogo
-    /// guarda na memória dele.
+    /// Accented text must survive the round trip byte for byte: that is what the game
+    /// keeps in its memory.
     #[test]
     fn latin1_ida_e_volta_preserva_acento() {
         let bytes = b"Configura\xe7\xf5es";

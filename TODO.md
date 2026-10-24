@@ -368,18 +368,349 @@ Still open (2026-10-23 evening):
   append `nohz=off highres=off` to ATAG_CMDLINE at handoff (tag
   grown 75->83 words, tail shifted; VA src + PA mirror + VA kernel
   copy). The tick is now PERIODIC.
-- Frontier moved to t≈27s (2026-10-24): with periodic ticks +
-  host kick (MATCH plant when stale + unmask + dirty every 100
-  slices) boot walks driver initcalls: mddi_pmdh init fails
-  gracefully (-ENODEV, unsupported version 0x0 on stubbed regs),
-  msm_serial detected, loop/PPP, ashmem, yaffs, io scheduler,
-  mmc1 SDCC probe (0xE1000000 stubbed), then parks in
-  msm_dmov_exec_cmd wait_for_completion. DMA completions are faked
-  per-call-site (lr 0xC002B570 only) until a real ADM model exists.
-  New stubs this round: 0xFFC00000 (MDDI), 0xE0200000 (CAMIF PAD),
-  0xE1000000 (SDCC). Open: verify the DMA waiter wakes and boot
-  proceeds past mmc; then retire the kick/mirror/skip TEMP
-  scaffolding.
+- SDCC DONE (2026-10-24): mmc0 (PIO, eject=1) and mmc1 (DMA,
+  eject=0) both probe cleanly on the 0xE1000000 stub; mmc1 even
+  reports a handled Command timeout and boot continues past both
+  into ram_console/Bluetooth/clocks/RTC (t=34.79s). No TRACE stop
+  on 0xE100 since the stub landed. Card contents not needed: the
+  rootfs is the boot.img ramdisk (initramfs, /init present), not
+  SD/YAFFS — no block-device data path on the critical path to
+  first shell.
+- Frontier t≈54s, BLOCKED on recurring tick BUG (2026-10-24):
+  `kernel BUG at kernel/posix-cpu-timers.c:1325!` (MemoryFault pc
+  0xC00251F8) fires at racy initcalls (recent_mt_init in one run,
+  msmsdcc_dbg_init in the next) — timing-dependent, not tied to one
+  driver. Full SPL cmdline now logged (ATAGCMD0): board_trout.* +
+  androidboot.* + no_console_suspend=1, NO init=/root=/console=
+  (hence the `init=/init` append; ramdisk has /init but none of the
+  kernel's 4 fallbacks). IRQ-gating the kick did NOT stop the BUG,
+  so the kick is exonerated as sole cause. New prime suspect:
+  the TICKBRK `regs[0]=0` force — a one-shot-era leftover firing on
+  EVERY periodic tick inside tick_handle_periodic — removed
+  (observe-only now; was_r0 in the next run tells whether the
+  PROGEV mirror alone keeps program_event succeeding). If the BUG
+  persists, next suspects: the mode-blind loop-top delivery paths
+  (nested entra_irq during outer softirq clobbers spsr_irq?),
+  PROGEV mirror (+10M lead corrupting the alarm path?) and the
+  handler-swap write.
+  DIAGNOSED 2026-10-24: disassembly of run_posix_cpu_timers entry
+  proves the BUG_ON: `mrs r3,CPSR; tst r3,#128; bne ok; bl __bug`
+  = BUG_ON(!irqs_disabled()); fault cpsr confirms I=0; stack shows
+  scheduler_tick+0x1f0 → run_posix_cpu_timers+0x38. Root cause is
+  OURS: all loop-top delivery paths checked only I==0, never the
+  mode — during an outer ISR's softirq (mode=IRQ, I re-enabled by
+  do_softirq) a pending edge caused NESTED entra_irq, clobbering
+  the single spsr_irq and corrupting the outer return until
+  scheduler_tick runs with I=0. Racy + timing-dependent (different
+  initcall each run), amplified by the kick planting a fresh edge
+  every 100 slices. Fix: `pode_irq` gate (I==0 AND mode in
+  USR/SVC/SYS) on all four delivery paths (WFI-wake, unmask-edge,
+  dirty, 64-poll); deferred polls use livre=false so level
+  tracking stays fresh without consuming the MATCH one-shot.
+  EXPERIMENT (in flight): BUG gone + klog past 54s toward Freeing
+  init memory / Run /init (init=/init appended; ramdisk /init
+  verified present).
+  CORRECTION 2026-10-24: the observe-only run (282/283) proved the
+  force is LOAD-BEARING — without regs[0]=0, program_event returns
+  -ETIME forever, MATCH frozen, kernel dead from t≈0 (28-line klog,
+  guest time dragged by the watchdog to a 335s posix BUG). So 283
+  could NOT validate the mode gate (no progress to nest on). The
+  "program_event succeeds on its own" verdict from the one-shot era
+  was wrong — the force was masking -ETIME at the retry site all
+  along. Combined test in flight: force restored + pode_irq gate —
+  if the BUG is gone past 54s, the gate fixed the nesting and the
+  force stays until /init; if the BUG recurs, suspects return to
+  force-corruption vs residual nesting.
+  CORRECTION-2 2026-10-24: identical nent trajectories with/without
+  the mode gate (246/490/734) prove nesting-during-softirq was
+  NEVER the mechanism — the gate is a no-op in practice. REVISED
+  mechanism: the kick's UNCONDITIONAL set_cpsr unmask violates
+  guest irqsave critical sections (mode is SVC there — no mode
+  gate can see it); delivery into the violated section corrupts
+  state until scheduler_tick runs with I=0 → BUG. Fix: unmask ONLY
+  after 30 consecutive masked kick-samples (≈6M masked
+  instructions — the parked-idle signature; critical sections
+  never survive it). Plant + handler-pin + dirty stay
+  unconditional (a pending edge while masked is harmless — served
+  at the guest's own unmask). EXPERIMENT (in flight): BUG gone
+  past 27s/54s toward Freeing init memory / Run /init.
+  CONFIRMED 2026-10-24 (linux285): clean Budget stop, NO BUG,
+  klog to 57.27s with initcalls flowing (alarm_late_init,
+  tcp_congestion_default return 0), KICK-UNMASK fired exactly
+  once, ticks healthy (nent 5777, I=0). The critical-section
+  violation was the BUG mechanism.
+- Wall at t≈57s: NO new printks for 900k slices while ticks/sched
+  stay alive — a silent poll. Halt trace names it:
+  flush_endpoint_hw (0xC0154E08-1C) + __const_udelay alternating:
+  guest writes mask to [QH+0x1B4] to initiate, polls for the
+  controller to clear ([r2+0x1B4]/+0x1B8 & mask) with udelay(10M)
+  between. QH lives in vmalloc RAM (0xC68061B4=0xFFFFFFFF
+  forever) — no USB engine modeled. Lively deadlock (ticks
+  preempt the spin; init's workqueue flush never drains).
+  EXPERIMENT (in flight): host-side completion (write 0 to both
+  status words on every 0xC0154E14 hit), then Freeing init memory
+  / Run /init as init.
+- USB flush COMPLETED (linux287): endpoints set up, evdev/mousedev
+  return, boot reaches synaptics_ts_init (touchscreen,
+  i2c_register_driver) at t≈3.3s — which never returns. Only 173
+  schedule switches ever; init parks once in schedule_timeout
+  (f≈103k, lr schedule_timeout+0x98) and never wakes; system
+  otherwise idles healthily (msm_arch_idle + timer softirqs,
+  nent 6093). Frozen-stack unwind names the chain:
+  kernel_init → synaptics_ts_init → i2c_register_driver →
+  driver_register → bus_add_driver → driver_attach →
+  bus_for_each_dev → __driver_attach → driver_probe_device →
+  i2c_device_probe → parked at synaptics_ts_probe+0xc.
+  EXPERIMENT (in flight): wait_for_common entry trap now COMPLETES
+  the synaptics wait (compl 0xC6017B84, on init's stack — exact
+  address from WFC#1: timeout 0x64, task init, lr
+  wait_for_completion_timeout+0x14) host-side on entry. Probe
+  proceeds as if its event arrived (reads unmodeled device state
+  → graceful -ENODEV or dead input device both unblock boot).
+  LESSON 2026-10-24: trap_pc_mem REPLACES per address — a new trap
+  on an occupied pc silently evicts the old one (my SCHTO trap
+  killed nothing and logged nothing because the ancient STIME trap
+  squatted on 0xC02133D0 with a dead cap). Merged: single STIME
+  trap, cap 300, late stack dumps.
+  PROGRESS (linux293): probe reads product info (major 3, minor 1,
+  property/device-control/irq-enable all 1) then the probe LOOPS
+  on the same completion (WFC#7-10, f=103308-23: fake-wake →
+  condition still false → re-wait), then parks in a 5th wait past
+  the log cap. Faking the SIGNAL isn't enough; the underlying
+  CONDITION (ATTN IRQ / i2c data-ready) never becomes true.
+  EXPERIMENT (in flight): WFC cap 10→300 to see the 5th+ waits
+  (same completion loop vs new wait). FOUND (linux294): same
+  completion loops (WFC#8-12, compl 0xC6017B84) then a SECOND
+  completion 0xC6017C74 parks — the probe steps through per-stage
+  on-stack completions for the same unmodeled event (ATTN IRQ /
+  i2c done). Fix in flight: complete ANY finite wait from the
+  init thread (task 0xC6013C00), logging each new address.
+- MILESTONE (linux295): `Freeing init memory: 100K` — all
+  initcalls done — then Exception at flush_pfn_alias+0x78
+  (pc 0xC00273B4 = STC p15 0xEC442F0E, a cache-preload hint on the
+  /init exec path via flush_dcache_page). Backend gap, not device
+  gap: the flat model has no caches (GuestMemory directly
+  coherent), so LDC/STC p15 are NOPs. Fix: accept LDC/STC class
+  to CP#15 in arm_coproc, still fault other coprocessors (VFP
+  data would corrupt) + unit test.
+- Next wall (linux296): MemoryFault in __clear_user+0x34 on user
+  VA 0x1FCE0 — the ELF loader mapped /init's pages in the user
+  pgd, which the flat MMU never consulted. Fix: guest PT walk
+  (TTBR0, key 0x100) on user faults < 0xC0000000 outside SPL-alias
+  and known windows — resolve VA->PA (small-page/section/large),
+  mirror the 4 KiB physical page seeded from PA, track uncapped,
+  repeats still stop. Needs le_cp15 accessor (added).
+  EXPERIMENT (in flight): UFAULT run — pages mapping + Run /init
+  as init process. DIAGNOSIS: PTWALK miss — L1 unreadable at the
+  table PA (TTBR0=0x1615C008 valid). Root cause: GuestMemory's PA
+  bank goes stale post-MMU (guest builds tables via VA writes;
+  PA copies never updated). Fix: le_ram_fisica — read everything
+  through the lowmem alias (VA = PA + 0xB0000000, live contents),
+  mapping + seeding the VA page on demand; RAM-gated
+  (0x10000000..0x20000000) so device PAs still stop the run
+  instead of shadowing the model. Walk + page seeding both use
+  it. DIAGNOSIS-2: walk now reads (alias works) but L1[0]=0 is
+  REAL — no mapping yet. On real HW this exact instruction
+  faults into do_page_fault (demand paging); our model never
+  delivers aborts. Reimplementing the handler host-side is
+  strictly worse than letting the kernel run it. Implemented
+  DATA/PREFETCH ABORT DELIVERY (entra_aborto: mode ABT, I+A
+  masked, FAR key 0x300 / DFSR 0x280 / IFSR 0x281, lr=fault+8,
+  vector via SCTLR bit13, ABT stack fallback, TOTAL_ABORTOS,
+  entry audit, unit test — which caught a bank-swap clobber of
+  lr, fixed to entra_irq's order). Harness: user-VA walk-miss →
+  vector sanity (ldr pc shape) → deliver; 2nd fault same page =
+  stop; no delivery from ABT/FIQ. fsr fixed 0x5 (translation
+  fault). Fetch faults (addr==pc) → prefetch abort. Flow per new
+  page: fault → abort → guest installs PTEs → fault → walk hits
+  → mirror → proceed. EXPERIMENT (in flight): full demand-paging
+  loop toward Run /init. DIAGNOSIS-3: mirror landed
+  (pte=0x160C305F ok=true) but the retry's walk still said "bad
+  L2" — 0b11 is a VALID small page with XN=1 (non-executable
+  .bss), which the walk rejected (only 0b10). Fix: accept any
+  descriptor with bit 1 set as small page. DIAGNOSIS-4: no walk
+  output at all on retry — map_zeroed FAILED SILENTLY on overlap:
+  user VA 0x1F000 collides with the stale SPL image mapping
+  (0x0-0x80000, read-only). Fix: GuestMemory::desmapeia_intervalo
+  (carve [base,base+len), splitting survivors with content+flags,
+  rebuild order index; unit-tested) + CpuBackend hook; fault arm
+  carves before mapping (only after a walk HIT, so wild accesses
+  still stop). DIAGNOSIS-5: vector entry confirmed for both
+  aborts, but no PTE install on the stack fault — and VEC lr was
+  fault+4, not the abort-correct fault+8 (r15 sits AT the fault
+  for fault traps, unlike IRQ delivery where it's advanced past;
+  proven by VEC lr). Wrong lr corrupts the retry (subs returns to
+  fault-4). Fix: lr = r15+8; unit test updated. PLUS: DABT entry
+  trap (addr+fsr as received) to distinguish "no VMA / bad area"
+  bail from a broken entry path.
+  DIAGNOSIS-6 (the big one): guest executes SPL BYTES as /init —
+  the stale SPL low image (0x0-0x80000, mapped+executable) shadows
+  all of userspace text, which therefore never faults (executes
+  garbage; sp corrupts downstream; SIGSEGVs are "correct" for the
+  wrong binary). Proven: bytes at 0x809C match spl.bin, not the
+  ELF. Fix: carve 0x0-0x80000 wholesale on the first user fault
+  (kernel runs from high mappings; high vectors stay).
+  DIAGNOSIS-7 (Thumb): prefetch-LR split (data fault+8, prefetch
+  fault+4 — guest resumes via subs pc,lr,#8/#4). Wrong prefetch lr
+  skipped the faulting ldr and branched on stale ip=0 to address 0.
+  Fix: lr=r15+8 data, r15+4 prefetch + unit test both variants.
+  GOTVAL then correct (0x15119) and init dispatches into Thumb code.
+  DIAGNOSIS-8 (Thumb resume): run() sets T from pc bit0, but Thumb
+  fault pcs are even — bare pc_falta resumes ARM and mis-executes
+  Thumb bytes as ARM (0x15118 Thumb slid into garbage, jumped to
+  0x195311C with sp untouched). Same loss at every Budget slice
+  boundary in Thumb. Fix: preserve T via pc bit0 from estado_cpsr
+  on the UFAULT resume and the Budget resume. CONFIRMED
+  (linux324): wild jump gone, Thumb init runs (11 UFAULT pages),
+  stops at 0x12660 str to [r0=8]. The 0x1259c getter does
+  r0=[0xFFFF0FF0]+8 (pool 0xFFFF0FF0) and reads 0: the kuser page
+  at 0xFF0 is zero in our map. Template has helpers at
+  0xF00-0xF60 (__kuser_helper_start 0xC000BF80); 0xFF0 content
+  depends on the vectors-page copy. EXPERIMENT (in flight,
+  linux325): ABORT cap 8→16 (see the addr-8 delivery #9) +
+  KUSERW watch (stores to [0xFFFF0F00,0xFFFF1000)) — silent means
+  the helper copy never lands through our map.
+  DIAGNOSIS-9 (Thumb BL base): old-Thumb BL first half must use
+  the UNMASKED pc+4 — the `& !2` sent pairs at pc≡2 (mod 4) two
+  bytes early. Init's bl at 0x8ECE (base must be 0x8ED2) landed on
+  0x8DB2 padding (0xFFFF = BL-second-half shape), which consumed
+  the stale odd LR (0x8ED3) → target 0x8ED3+0xFFE = 0x9ED1, odd-pc
+  fetch Exception. Fix: drop the mask + discriminating unit test
+  (pair at 0x02 → exact 0x100). CONFIRMED (linux327/328):
+  init runs deep into userspace (syscalls flowing, 20+ pages),
+  new wall is a kernel copy_from_user loop faulting on user page
+  0xBEC0A000 (page above the mapped stack page).
+  DIAGNOSIS-10 (abortadas too coarse): keyed page-only, so a
+  legitimate SECOND touch of a page (kernel uaccess fixup returns
+  -EFAULT and the caller moves on; a later retry or a different
+  copy phase refaults the same page) stopped the run as a "loop".
+  Fix: key (page, pc) — same-instruction retry still stops;
+  different-pc progress delivers. ABORT cap 16→40, UDECIDE cap
+  40→80. In flight (linux329). REFINED (linux331): even
+  (page,pc) stop-on-2nd is wrong — klog proves init is ALIVE
+  (`init: cannot open '/initlogo.rle'`, yaffs mounting mtdblock3),
+  so a same-pc refault is a recurring incident (fixup -EFAULT +
+  caller retries), not a livelock. Fix: per-(page,pc) delivery
+  budget of 10 (tight loops still stop via ABORT-LOOP); UDECIDE
+  miss-only.
+  DIAGNOSIS-11 (init abort): exit_group(127) via ARM wrapper at
+  0xBE10, lr=0x1275B (Thumb caller does movs r0,#127; blx after
+  blx 0xCAC0=getpid?/kill path — actually the sequence at
+  0x12722+ is sigaction(SIGABRT)/getpid/kill/abort). So init
+  calls abort(): sigaction/getpid/kill(SIGABRT)/exit(127). The
+  abort is guarded by a [r0]==[r7] check at 0xA6F4 (0xA6F4:
+  ldr; 0xA6F6: ldr; 0xA6F8: cmp; 0xA6FA: beq skip; 0xA6FC: bl
+  fatal): r0=0xBEC09CAC (stack) [r0]=0xAA2D vs r7=0x201A8
+  (.bss) [r7]=0xFF0A0000. The 0x126C4 "assert" trap's r1
+  (property message) is PROVEN stale (function overwrites all
+  arg regs before first use) — the property error is
+  coincidental timing, not proven cause. BSSWR shows NO guest
+  write to 0x201A8: the 0xFF0A0000 came from the mirror SEED
+  (stale lowmem alias — anonymous .bss zeroed via fixmap
+  kmap_atomic is invisible to our alias walk). Leading theory:
+  stale .bss seed breaks the check (whatever it guards).
+  EXPERIMENT (in flight, linux341): CHK trap forces the check
+  to pass (r15=0xA700, the beq target) — if init proceeds to
+  console/adbd, the check was the sole gate; the proper fix is
+  fixmap-coherent zeroing (mirror clear_highpage/copy_user_
+  highpage into the lowmem alias) or anonymous-zero seeding.
+  DIAGNOSIS-12 (check named: stack guard; stale-seed DISPROVEN):
+  BSSWR (linux343) caught the guest ITSELF writing 0x201A8
+  byte-by-byte (00 00 0A FF at 0x127B4-0x127BA) — the .bss word
+  is the /dev/urandom fallback of a canary seeder (0x1277C:
+  open/urandom, read 4 into guard, close; on failure write
+  00 00 0A FF). The 0xA5E4 function is stack-guarded: prologue
+  (0xA5E6-0xA5FA) copies [GOT+0x1C] to sp+0x1074 in a 4220-byte
+  frame; epilogue (0xA6E6-0xA6FA) compares stack copy vs
+  [GOT+0x1C] and calls 0x126C4 on mismatch (second site 0xAB72
+  in another guarded function). [r0]=0xAA2D vs [r7]=0xFF0A0000
+  is a REAL pocket veto: canary copied pre-seed (or slot never
+  written) vs guard post-seed. RESOLVED (linux341→): the skip
+  is NOT a gate pass — init proceeds past the property stage
+  then faults jumping to 0xFF0A0000 itself (TRACE: ...0xA700,
+  0xA702, 0xA704 pop {r4-r7,pc}, then pc=0xFF0A0000): the saved
+  return address IS the guard value, i.e. frame/sp corruption
+  (wrong pop slot) or a mid-function guard reseed, not a
+  decision to bypass. Ramdisk hack (linux352, nand_proptest.img
+  with pre-created data/property): property error GONE but the
+  SAME 0xFF0A0000 fault — the missing dir is PROVEN not the
+  cause (and the 0x126C4 r1 message is stale by construction).
+  Stack slot 0xBEC09CAC has exactly ONE es_mem writer (0x15150,
+  value 0x0001F48C, not the canary) — the prologue str at
+  0xA5FA never lands there, pointing at sp drift across the
+  function's syscalls (read/write/open wrappers 0xBF30/50/70)
+  rather than a guest overflow. EXPERIMENT (in flight,
+  linux355): CENTRY (sp/lr/pools at 0xA5E4) + CCOPY (dst/value
+  at 0xA5FA) + extended CHK (sp/r4-r6) — CHK sp vs CCOPY sp
+  decides sp-corruption (emulator SVC-path bug) vs overwrite
+  (guest stack smash); CCOPY dst vs CHK r0 decides frame-math
+  error.
+  RESOLVED (linux355-356): emulator bug, frame math CORRECT.
+  CCOPY dst (0xBEC09CC4) == sp+0x1074 exactly; but CHK sp is
+  -24 vs CCOPY sp, so r0 reads 24 below the true slot and the
+  epilogue pops the guard itself into pc (0xFF0A0000 fault).
+  Cause: Thumb `push` committed sp BEFORE the stores — a
+  mid-push fault (demand-paged stack growth across the 4220-B
+  frame) left sp decremented, and the resume re-executed the
+  push (double-apply; ARM stm/ldm already commit last and are
+  safe). Fix: roll sp back on store failure inside thumb_push
+  + unit test push_thumb_falhado_restaura_sp (mid-push fault
+  restores sp). Live: CHK now [r0]==[r7]==0xFF0A0000, sp
+  stable, clean Budget stop — no abort, no fault, no panic.
+  linux356 klog advances PAST the property error (non-fatal, as
+  predicted): init disables console/servicemanager/mountd/
+  debuggerd/rild/zygote/media/bootsound/dbus/installd/
+  flash_recovery/akmd — all `cannot find '/system/bin/*'`
+  because yaffs mounts fail on empty NAND (no yaffs content in
+  image). Canary probe cluster retired (CHK skip, CENTRY,
+  CCOPY, BSSWR/BSSRD, STKWR, VALWR).
+  NAND second wall (independent, after canary): yaffs
+  refuses all mounts (`NAND geometry problems: chunk size 2048,
+  type is yaffs2, inbandTags 0` = oobsize < 32 — kernel-phase
+  MTD reads hit zeroed stubs, no ID/partition/data path yet;
+  SPL-phase serve only covers the SPL's own loads). OPEN watch
+  confirms init reaches mknod /dev/mtd/mtd0.. but never a
+  working /system or /data.
+  MILESTONE (linux331): clean Budget stop with init RUNNING —
+  `Freeing init memory`, `/initlogo.rle` missing (non-fatal),
+  yaffs mounts on mtdblock3/5/4, then `init: Unable to open
+  persistent property directory /data/property errno: 2` and
+  `Kernel panic - not syncing: Attempted to kill init!`
+  (do_exit fired, task=init, no SIGSEGV — voluntary exit).
+  Ramdisk has no /sbin/recovery (adbd only), normal init.rc
+  (zygote etc.): init attempts a normal boot with empty /system.
+  NAND image has no yaffs content (only SPL boot blocks +
+  kernel/ramdisk), so mounts can't succeed. Open: is the exit
+  caused by empty mounts, or by a mis-emulated syscall on the
+  path? EXPERIMENT (in flight, linux332): SVC cap 12→300 to
+  catch the late syscalls (mount/open/execve/exit) and name the
+  killer. RESOLVED the exit call chain (linux333-335):
+  init calls exit_group(127) via a tiny ARM wrapper at 0xBE10
+  (push/mov r7,#248/svc/pop/bxpl), with lr=0x1275B — a Thumb
+  caller doing `movs r0,#127; blx 0xBE10` unconditionally after
+  `blx 0xCAC0` (reached via BLX-immediate, which the first scan
+  missed; no BL/B/pool reference exists). Open: parent (init
+  itself deliberately exiting?) vs forked service child (execve
+  failed on empty /system → _exit 127) — FATAL says task=init
+  died, but no fork/clone/execve appeared in the logged SVC
+  window. EXPERIMENT (in flight, linux336): EXITCAL extended to
+  fork/clone (r7=2/120) + lr.
+  RESOLVED (2.6.25 traps.c, verified from source): set_tls writes
+  the TLS value DIRECTLY to *((unsigned int *)0xffff0ff0) when
+  neither HAS_TLS_REG nor TLS_REG_EMUL is set — FF0 is the TLS
+  slot, not padding. Our svc() stubbed ALL syscalls to r0=0, so
+  set_tls "succeeded" without writing FF0 → [FF0]=0 → r0=8 →
+  SIGSEGV. Fix: entra_svc — USR-mode SVC delivery to the guest's
+  vector_swi (mode SVC, I masked, lr=fault+4 ARM/fault+2 Thumb,
+  vector via SCTLR, SVC stack fallback, TOTAL_SVC, audit, unit
+  test). Routing by immediate (semihosting: 0x123456/0xAB/SPL's
+  0xCDAB89; else USR→guest, privileged→legacy stub) so the SPL
+  and the semihosting unit test are untouched. EXPERIMENT (in
+  flight, linux326): first guest-handled syscall.
+  DIAGNOSIS-2: no ABORT#/UFAULT
+  at all — the vector sanity check rejected a VALID vector
+  (`b 0xFFFF0280`, not `ldr pc`): ABORT-NOVET fired, check was
+  too strict. Widened to accept branches. In flight again.
 - The first tick now COMPLETES (periodic ticks flow: klog
   timestamps advance 1.39→1.47s, PREENT passes repeatedly,
   schedule activity). The old `-ETIME` treadmill analysis below
@@ -401,6 +732,24 @@ Still open (2026-10-23 evening):
   plants + TIMERSTATE). Retired 2026-10-24: PCSAMP (the Budget
   stop now prints the parked pc + stack + pc history via
   `imprime_trace`, which subsumes it).
+
+## Radio / ARM9 modem + audio (future workstream, NOT blocking first shell)
+
+- The modem is a separate ARM9 (+ QDSP) running its own AMSS firmware;
+  the AP side talks to it over SMD/smem (`smd_alloc_channel`, `sync_smem_clock`,
+  `SMEM`/`smem` prints). There is deliberately NO ARM9 emulation yet.
+- Current strategy (working so far): absent modem with graceful AP-side
+  degradation. Evidence it holds: `smd_alloc_channel() cid ... does not
+  exist` errors continue past probe; `no smem clock` prints instead of
+  hanging; mddi init times out then fails -ENODEV and boot continues.
+- Do NOT spin up radio emulation (or subagents for it) until first shell:
+  the AP interface requirements are still unknown, and parallel work now
+  would integrate against guesses. Reassess after userspace: check whether
+  `rild` hard-blocks init (likely not — init/adbd/shell don't need it),
+  and whether audio matters for the shell goal (it doesn't).
+- If radio ever becomes necessary, prefer host-side SMD/smem responses
+  (fake the mailbox) over emulating the ARM9 core — orders of magnitude
+  cheaper, same observable behavior for the AP.
 
 ## Stall after `neigh_init` (Dream, on hold behind the tick)
 

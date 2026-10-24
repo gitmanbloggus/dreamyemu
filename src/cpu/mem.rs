@@ -147,6 +147,56 @@ impl GuestMemory {
         self.map(name, base, vec![0; len], true)
     }
 
+    /// Remove [base, base+len) from the map, splitting any overlapped
+    /// region and keeping the survivors (content + flags). Used when a
+    /// live mapping must replace stale bytes — e.g. a user page over
+    /// the SPL image the kernel's buddy allocator recycled (the guest
+    /// installed PTEs, so the new content wins). No-op when nothing
+    /// overlaps; never fails.
+    pub fn desmapeia_intervalo(&mut self, base: u32, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let fim = base.saturating_add(len as u32);
+        if fim <= base {
+            return;
+        }
+        let mut novas: Vec<Region> = Vec::new();
+        for r in self.regions.drain(..) {
+            let r_fim = r.base.saturating_add(r.bytes.len() as u32);
+            if r_fim <= base || r.base >= fim {
+                novas.push(r);
+                continue;
+            }
+            if r.base < base {
+                let n = (base - r.base) as usize;
+                novas.push(Region {
+                    name: r.name,
+                    base: r.base,
+                    bytes: r.bytes[..n].to_vec(),
+                    writable: r.writable,
+                    executavel: r.executavel,
+                });
+            }
+            if r_fim > fim {
+                let ini = (fim - r.base) as usize;
+                novas.push(Region {
+                    name: r.name,
+                    base: fim,
+                    bytes: r.bytes[ini..].to_vec(),
+                    writable: r.writable,
+                    executavel: r.executavel,
+                });
+            }
+        }
+        self.regions = novas;
+        self.ordem.clear();
+        let mut idx: Vec<usize> = (0..self.regions.len()).collect();
+        idx.sort_by_key(|&i| self.regions[i].base);
+        self.ordem = idx;
+        self.ultimo.set(None);
+    }
+
     /// Whether code may be fetched at `addr`.
     pub fn executavel(&self, addr: u32) -> bool {
         self.region_for(addr, 4).is_some_and(|r| r.executavel)
@@ -283,6 +333,24 @@ mod tests {
         m.map("rom", 0x0000_0000, vec![0xaa; 0x100], false).unwrap();
         m.map_zeroed("ram", 0x1000_0000, 0x100).unwrap();
         m
+    }
+
+    #[test]
+    fn desmapeia_intervalo_recorta_e_preserva_sobras() {
+        // Carve [0x40..0x80) out of [0x0..0x100]: survivors keep
+        // content + flags, middle is gone, order index rebuilt.
+        let mut m = GuestMemory::new();
+        m.map("alvo", 0x1000, vec![0xbb; 0x100], true).unwrap();
+        m.desmapeia_intervalo(0x1040, 0x40);
+        assert!(m.read(0x1040, 4).is_err());
+        assert_eq!(m.read(0x1000, 4).unwrap(), &[0xbb; 4]);
+        assert_eq!(m.read(0x10fc, 4).unwrap(), &[0xbb; 4]);
+        // Fresh map over the carved hole works (no overlap error).
+        m.map_zeroed("nova", 0x1040, 0x40).unwrap();
+        assert_eq!(m.read(0x1040, 4).unwrap(), &[0; 4]);
+        // Full-region carve removes it entirely.
+        m.desmapeia_intervalo(0x1000, 0x100);
+        assert!(m.read(0x1000, 4).is_err());
     }
 
     #[test]

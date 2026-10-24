@@ -160,6 +160,13 @@ pub trait CpuBackend {
         Err(CpuError("on-demand mapping not supported".into()))
     }
 
+    /// Removes [base, base+len) from the map, splitting overlapped
+    /// regions (bring-up use only — carving a live user page out of
+    /// the stale SPL image). Backends without support return `Err`.
+    fn desmapeia_intervalo(&mut self, _base: u32, _len: usize) -> Result<(), CpuError> {
+        Err(CpuError("interval unmapping not supported".into()))
+    }
+
     /// Fills `len` bytes with `valor`, without allocating.
     ///
     /// Exists because of a measurement: the guest `memset` is called in a wait loop, and the

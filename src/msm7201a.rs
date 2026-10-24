@@ -20,6 +20,7 @@
 //! identifier renaming/translation is deferred.
 
 use crate::cpu::mem::{GuestMemory, MemError};
+use crate::cpu::CpuBackend;
 
 /// Where the SPL loads: ARM vectors live at `0x0` (`0x00: ea00000e`).
 pub const SPL_BASE: u32 = 0x0000_0000;
@@ -478,6 +479,127 @@ pub fn traduz(virt: u32) -> Option<u32> {
         }
     }
     None
+}
+
+/// Read guest RAM by physical address through the kernel's lowmem
+/// alias (VA = PA + 0xB0000000): the VA mirror holds the LIVE
+/// contents — post-MMU guest writes land in the VA-mapped pages,
+/// while the PA bank is only a seed source and goes stale (page
+/// tables, slab objects, copied user pages). Maps + seeds the VA
+/// page on demand if our map never touched it. Only for RAM
+/// (0x10000000..0x20000000); device PAs return false (mirroring a
+/// device as RAM would shadow the model — those stop the run).
+fn le_ram_fisica(
+    cpu: &mut crate::cpu::interpretador::Interpretador,
+    pa: u32,
+    buf: &mut [u8],
+) -> bool {
+    if !(0x1000_0000..0x2000_0000).contains(&pa) {
+        return false;
+    }
+    let va = pa.wrapping_add(0xB000_0000);
+    if cpu.read_mem(va, buf).is_ok() {
+        return true;
+    }
+    // Not in our map yet: page it like the kernel-VA arm (seeded
+    // from the PA bank, which may hold served content). Overlap
+    // (region appeared underneath) falls back to a plain retry.
+    let base = va & !0xFFF;
+    if cpu.map_zeroed("usuario_ptw", base, 0x1000).is_ok() {
+        let mut pg = vec![0u8; 0x1000];
+        if cpu.read_mem(pa, &mut pg).is_ok() {
+            let _ = cpu.write_mem(base, &pg);
+        }
+    }
+    cpu.read_mem(va, buf).is_ok()
+}
+
+/// Read a page-TABLE word through the lowmem alias WITHOUT mapping
+/// or seeding: table pages the guest built via fixmap are invisible
+/// here, and seeding from the stale PA bank manufactures phantom
+/// PTEs (proven live: phantom text/data mappings). Unmapped alias =
+/// miss (the abort path installs the real entry, the mirror trap
+/// copies it, the retry then hits). Only RAM PAs are readable.
+fn le_ram_tabela(
+    cpu: &mut crate::cpu::interpretador::Interpretador,
+    pa: u32,
+    buf: &mut [u8; 4],
+) -> bool {
+    if !(0x1000_0000..0x2000_0000).contains(&pa) {
+        return false;
+    }
+    cpu.read_mem(pa.wrapping_add(0xB000_0000), buf).is_ok()
+}
+
+/// Walk the guest's ARMv6 short-descriptor page tables (TTBR0) to
+/// resolve a user VA to the physical base of its containing 4 KiB
+/// page. Returns None on any fault/reserved entry, missing TTBR0,
+/// or unreadable tables (genuine stop — not a mappable page).
+///
+/// Used by the MemoryFault arm for user addresses: the ELF loader
+/// maps /init's segments, stack and brk in the user pgd, which our
+/// flat MMU never consulted — every user page faulted. Handles
+/// page-table + small-page (the normal Linux user mapping),
+/// section and large-page descriptors; supersections return None.
+fn caminha_pt_usuario(
+    cpu: &mut crate::cpu::interpretador::Interpretador,
+    va: u32,
+) -> Option<(u32, u32, u32)> {
+    // TTBR0 = CP15 c2,c0,0 → key 0x100 (see arm_coproc key layout).
+    let ttbr = cpu.le_cp15(0x100);
+    // TEMP (PT-walk audit, cap 4): which step fails.
+    static mut NPT: u32 = 0;
+    macro_rules! miss {
+        ($($a:tt)*) => {{
+            unsafe {
+                if NPT < 4 {
+                    NPT += 1;
+                    eprintln!($($a)*);
+                }
+            }
+            return None;
+        }};
+    }
+    let ttbr = match ttbr {
+        Some(t) => t,
+        None => miss!("PTWALK miss va={va:#x}: no TTBR0"),
+    };
+    // Table reads go through the lowmem alias (live contents —
+    // the tables were built via VA writes; PA copies are stale).
+    let l1pa = (ttbr & 0xFFFF_C000).wrapping_add((va >> 20) << 2);
+    let mut be = [0u8; 4];
+    // Table reads never map or seed (le_ram_tabela): seeded bytes
+    // manufacture phantom PTEs from stale PA content. Unmapped
+    // alias = miss; the abort installs the real entry and the
+    // mirror trap copies it, so the retry hits.
+    if !le_ram_tabela(cpu, l1pa & !3, &mut be) {
+        miss!("PTWALK miss va={va:#x}: L1 unreadable ttbr={ttbr:#x}");
+    }
+    let l1e = u32::from_le_bytes(be);
+    match l1e & 3 {
+        0b01 => {
+            // Page table: 256 L2 entries.
+            let l2pa = (l1e & 0xFFFF_FC00).wrapping_add(((va >> 12) & 0xFF) << 2);
+            if !le_ram_tabela(cpu, l2pa & !3, &mut be) {
+                miss!("PTWALK miss va={va:#x}: L2 unreadable l1e={l1e:#x}");
+            }
+            let l2e = u32::from_le_bytes(be);
+            match l2e & 3 {
+                // Small page. Bit 0 doubles as XN (execute-never):
+                // 0b10 executable, 0b11 XN (typical for .bss/data —
+                // the mirror trap logged pte=0x160C305F for exactly
+                // such a page). Both are present, mapped pages.
+                e if e & 0b10 != 0 => Some((l2e & 0xFFFF_F000, l2e, l2pa & !0xFFF)),
+                // Large page (64 KiB): containing 4 KiB subpage.
+                0b01 => Some(((l2e & 0xFFFF_0000) | (va & 0xF000), l2e, l2pa & !0xFFF)),
+                _ => miss!("PTWALK miss va={va:#x}: bad L2 l2e={l2e:#x}"),
+            }
+        }
+        // Section (1 MiB): containing 4 KiB subpage. Bit 18 set
+        // means supersection (16 MiB) — not expected in user space.
+        0b10 if l1e & 0x40000 == 0 => Some(((l1e & 0xFFF0_0000) | (va & 0xFF000), l1e, 0)),
+        _ => miss!("PTWALK miss va={va:#x}: bad L1 l1e={l1e:#x}"),
+    }
 }
 
 /// One candidate MMIO window, behavior still unknown.
@@ -1316,6 +1438,14 @@ fn deve_entregar(mem: &GuestMemory, livre: bool) -> bool {
 /// audit above. (A plain bool; the harness owns the slice clock.)
 pub static mut AUDIT_LATCH: bool = false;
 
+/// TTBR0 + owning task cached by the user-fault arm (which has cpu)
+/// for the PTE-mirror trap (which only gets mem): update_mmu_cache
+/// always runs in the faulting task's context, so a task mismatch
+/// means an interleaved switch — skip rather than mirror into the
+/// wrong table. Refreshed on every user walk-miss.
+pub static mut TTBR_CACHE: u32 = 0;
+pub static mut TTBR_TASK: u32 = 0;
+
     let mut mem = monta_mapa_inicial(&spl).unwrap();
     mem.map_zeroed("sonda_fria", 0x01f6_a000, 0x1000).unwrap();
     mem.map_zeroed("perif_b540_stub", 0xB540_0000, 0x1000).unwrap();
@@ -2030,6 +2160,7 @@ pub static mut AUDIT_LATCH: bool = false;
     cpu.trap_pc_mem(0xC021_2A08, move |mem, regs| {
         static mut N: u32 = 0;
         static mut ND: u32 = 0;
+        static mut ND2: u32 = 0;
         unsafe {
             if N < 400 {
                 N += 1;
@@ -2048,6 +2179,19 @@ pub static mut AUDIT_LATCH: bool = false;
                         *s = mem.read_u32(regs[13].wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
                     }
                     eprintln!("SCHSTK#{n} f={} sp={:#x} stk={st:#x?}", unsafe { FATIA_ATUAL }, regs[13]);
+                }
+                // Late-era stacks (the 57s wall parks init once at
+                // f≈103k and never switches again — early dumps miss
+                // it). Fresh counter, gate f>=400000. NOTE: only fires
+                // on actual switches; the parked init never re-enters
+                // schedule, so the frozen-stack dump below carries it.
+                if unsafe { FATIA_ATUAL } >= 400000 && ND2 < 8 {
+                    ND2 += 1;
+                    let mut st = [0u32; 48];
+                    for (i, s) in st.iter_mut().enumerate() {
+                        *s = mem.read_u32(regs[13].wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
+                    }
+                    eprintln!("SCHSTK-LATE#{n} f={} sp={:#x} stk={st:#x?}", unsafe { FATIA_ATUAL }, regs[13]);
                 }
             }
         }
@@ -2616,12 +2760,393 @@ pub static mut AUDIT_LATCH: bool = false;
             }
         }
     });
-    // scan increments r5 per byte looking for '\n'; the r5==r7
-    // termination check sits outside the inner loop. If r5 runs past
+    // TEMP (wait_for_common entry 0xC0213114): the 57s wall is init
+    // in wait_for_common (lr schedule_timeout+0x98, timeout 0x64)
+    // inside synaptics_ts_probe — a completion that never signals
+    // AND whose timer never fires. Log completion addr (r0),
+    // timeout (r1), caller (lr), task. Finite timeouts only (the
+    // MAX ones are kthread noise). PLUS: complete the synaptics
+    // wait (compl 0xC6017B84, on init's stack) host-side (done=1)
+    // on entry — the awaited event (ATTN IRQ / i2c xfer done) has
+    // no emulated source; the probe then proceeds to read device
+    // state (graceful -ENODEV or a dead input device both unblock
+    // boot). Scoped to the exact address; the WFC log names any
+    // future mover. Revisit with real i2c/GPIO IRQ modeling.
+    cpu.trap_pc_mem(0xC021_3114, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            // Finite timeouts only: the MAX (infinite) ones are
+            // kthread_create noise (already understood) that exhausts
+            // the cap before the synaptics wait (timeout 0x64).
+            // Cap 300 (the probe re-waits in a loop — 10 dies early).
+            if unsafe { FATIA_ATUAL } >= 90000 && regs[1] != 0x7FFF_FFFF && N < 300 {
+                N += 1;
+                let n = N;
+                let ti = regs[13] & !0x1FFF;
+                let task = mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
+                eprintln!("WFC#{n} f={} compl={:#x} timeout={:#x} task={:#x} ti={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[1], task, ti, regs[14]);
+            }
+            if regs[0] == 0xC601_7B84 {
+                let _ = mem.write_u32(regs[0], 1);
+                static mut NWC: u32 = 0;
+                if NWC < 3 {
+                    NWC += 1;
+                    eprintln!("WFC-COMPLETE f={} (synaptics wait)", unsafe { FATIA_ATUAL });
+                }
+            }
+            // The probe steps through per-stage on-stack completions
+            // (0xC6017B84 looped, then 0xC6017C74 parked) — same
+            // unmodeled event (ATTN IRQ / i2c done) each time. Complete
+            // ANY finite wait from the init thread (task 0xC6013C00,
+            // stable across runs; the WFC log names movers), log each
+            // new address. Kthread infinite waits untouched.
+            if regs[1] != 0x7FFF_FFFF {
+                let ti2 = regs[13] & !0x1FFF;
+                let task2 = mem.read_u32(ti2.wrapping_add(12)).unwrap_or(0xDEAD);
+                if task2 == 0xC601_3C00 {
+                    let _ = mem.write_u32(regs[0], 1);
+                    static mut NWD: u32 = 0;
+                    static mut ULTIMO_WFC: u32 = 0;
+                    unsafe {
+                        if regs[0] != ULTIMO_WFC && NWD < 10 {
+                            NWD += 1;
+                            ULTIMO_WFC = regs[0];
+                            eprintln!("WFC-COMPLETE-INIT f={} compl={:#x} (init finite wait)", unsafe { FATIA_ATUAL }, regs[0]);
+                        }
+                    }
+                }
+            }
+        }
+    });
+    // TEMP (PTE mirror via update_mmu_cache 0xC0027228): the guest
+    // installs user PTEs through fixmap kmap_atomic slots, invisible
+    // to the lowmem alias the PT walk reads — the walk keeps missing
+    // and the abort loops. update_mmu_cache(vma, addr, pte) runs on
+    // every install with the exact values (proven live: it fired in
+    // the abort handler's file-fault path): mirror the PTE into the
+    // lowmem-alias copy of the L2 table so the walk (and the fault
+    // retry) sees it. TTBR comes from the fault-arm cache (updated
+    // on every user walk-miss); a task mismatch means an
+    // interleaved switch — skip rather than mirror into the wrong
+    // table. Uncapped writes (every install matters), log cap 12.
+    // Permanent until GuestMemory grows alias coherence.
+    cpu.trap_pc_mem(0xC002_7228, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            let va = regs[1];
+            let pte = regs[2];
+            let ti = regs[13] & !0x1FFF;
+            let task = mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
+            if task != TTBR_TASK || TTBR_CACHE == 0 {
+                return;
+            }
+            // L1 walk through the lowmem alias (tables built via VA
+            // writes; PA bank stale). Map + seed alias pages on demand
+            // with GuestMemory's inherent API (the trap gets mem, not
+            // cpu — no CpuBackend trait methods here).
+            let le32 = |m: &GuestMemory, a: u32| -> Option<u32> {
+                m.read(a, 4)
+                    .ok()
+                    .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+            };
+            let l1pa = (TTBR_CACHE & 0xFFFF_C000).wrapping_add((va >> 20) << 2);
+            let l1av = l1pa.wrapping_add(0xB000_0000);
+            let l1e = match le32(mem, l1av) {
+                Some(e) => e,
+                None => {
+                    let b0 = l1av & !0xFFF;
+                    if mem.map_zeroed("usuario_ptw", b0, 0x1000).is_err() {
+                        return;
+                    }
+                    if let Ok(src) = mem.read(l1pa & !0xFFF, 0x1000) {
+                        let buf = src.to_vec();
+                        let _ = mem.write(b0, &buf);
+                    }
+                    match le32(mem, l1av) {
+                        Some(e) => e,
+                        None => return,
+                    }
+                }
+            };
+            if l1e & 3 != 0b01 {
+                return;
+            }
+            let l2pa = (l1e & 0xFFFF_FC00).wrapping_add(((va >> 12) & 0xFF) << 2);
+            if !(0x1000_0000..0x2000_0000).contains(&l2pa) {
+                return;
+            }
+            let ava = l2pa.wrapping_add(0xB000_0000);
+            let mut ok = mem.write_u32(ava, pte).is_ok();
+            if !ok {
+                let b0 = ava & !0xFFF;
+                if mem.map_zeroed("usuario_ptw", b0, 0x1000).is_ok() {
+                    if let Ok(src) = mem.read(l2pa & !0xFFF, 0x1000) {
+                        let buf = src.to_vec();
+                        let _ = mem.write(b0, &buf);
+                    }
+                    ok = mem.write_u32(ava, pte).is_ok();
+                }
+            }
+            if unsafe { N < 12 } {
+                unsafe {
+                    N += 1;
+                }
+                eprintln!("PTEMIRR f={} va={va:#x} pte={pte:#x} ok={ok}", unsafe { FATIA_ATUAL });
+            }
+        }
+    });
+    // TEMP (abort vector entries): confirm the guest abort handlers
+    // execute after entra_aborto (vs pc getting clobbered between
+    // delivery and the next run). Data (0xFFFF0010) and prefetch
+    // (0xFFFF000C) vectors get separate one-shot logs — the
+    // prefetch path was never verified.
+    cpu.trap_pc_mem(0xFFFF_0010, move |_mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 4 {
+                N += 1;
+                eprintln!("ABORT-VEC f={} lr={:#x}", unsafe { FATIA_ATUAL }, regs[14]);
+            }
+        }
+    });
+    cpu.trap_pc_mem(0xFFFF_000C, move |_mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 4 {
+                N += 1;
+                eprintln!("PABORT-VEC f={} lr={:#x}", unsafe { FATIA_ATUAL }, regs[14]);
+            }
+        }
+    });
+    // TEMP (do_DataAbort entry 0xC00211F4): log what the guest's
+    // abort handler receives (r0=addr, r1=fsr) — distinguishes "no
+    // VMA / bad area" (handler bails before installing) from a
+    // broken entry path. Cap 6, no gate (aborts are rare).
+    cpu.trap_pc_mem(0xC002_11F4, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 6 {
+                N += 1;
+                let n = N;
+                let ti = regs[13] & !0x1FFF;
+                let task = mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
+                eprintln!("DABT#{n} f={} addr={:#x} fsr={:#x} task={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[1], task, regs[14]);
+            }
+        }
+    });
+    // TEMP (fatal-signal watch: force_sigsegv/do_exit/panic): the
+    // stack fault's handler runs update_mmu_cache never, but the
+    // signal machinery (get_signal_to_deliver/do_signal/ret_to_user)
+    // dominates the halt trace. Log which fatal path fires (signr,
+    // task) — SIGSEGV-to-init should panic; a silent return means
+    // the signal was discarded/handled. One-shot each (cap 2).
+    for (va, nm) in [
+        (0xC005_38E4u32, "SIGSEGV"),
+        (0xC004_9CA8u32, "DOEXIT"),
+        (0xC004_64D8u32, "PANIC"),
+    ] {
+        cpu.trap_pc_mem(va, move |mem, regs| {
+            static mut N: u32 = 0;
+            unsafe {
+                if N < 6 {
+                    N += 1;
+                    let n = N;
+                    let ti = regs[13] & !0x1FFF;
+                    let task = mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
+                    eprintln!("FATAL#{n} {nm} f={} sig={:#x} task={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], task, regs[14]);
+                }
+            }
+        });
+    }
+    // TEMP (signal-send watch 0xC0026AB8/0xC0052610): __do_user_fault
+    // (addr+fsr+sig+code) and force_sig_info (signr) — the stack
+    // fault's handler installs nothing, yet no SIGSEGV/exit/panic
+    // fires; do_signal runs and returns via no_work_pending. Name
+    // the exact signal event (or its absence). Cap 4 each.
+    cpu.trap_pc_mem(0xC002_6AB8, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 4 {
+                N += 1;
+                eprintln!("USRFLT f={} addr={:#x} fsr={:#x} sig={} code={} task={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[1], regs[2], regs[3], mem.read_u32((regs[13] & !0x1FFF).wrapping_add(12)).unwrap_or(0xDEAD), regs[14]);
+            }
+        }
+    });
+    cpu.trap_pc_mem(0xC005_2610, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 4 {
+                N += 1;
+                eprintln!("SENDSIG f={} sig={} task={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[1], mem.read_u32((regs[13] & !0x1FFF).wrapping_add(12)).unwrap_or(0xDEAD), regs[14]);
+            }
+        }
+    });
+    // TEMP (VMA decision watch: do_bad_area/find_extend_vma/
+    // expand_stack): the stack fault's handler sends SIGSEGV without
+    // installing — name the VMA decision (no growdown neighbor vs
+    // expansion refused). Cap 4 each.
+    for (va, nm) in [
+        (0xC002_6DC8u32, "BADAREA"),
+        (0xC008_564Cu32, "FINDEXT"),
+        (0xC008_5598u32, "EXPAND"),
+    ] {
+        cpu.trap_pc_mem(va, move |mem, regs| {
+            static mut N: u32 = 0;
+            unsafe {
+                if N < 4 {
+                    N += 1;
+                    let n = N;
+                    eprintln!("VMA#{n} {nm} f={} addr={:#x} task={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], mem.read_u32((regs[13] & !0x1FFF).wrapping_add(12)).unwrap_or(0xDEAD), regs[14]);
+                }
+            }
+        });
+    }
+    // TEMP (handle_mm_fault entry 0xC0083060): if it fires for the
+    // stack fault, a VMA covers the address (proceeding to map);
+    // if it never fires, find_vma found nothing (gap). vma=r1,
+    // addr=r2. Cap 40 (text faults each trigger it once).
+    cpu.trap_pc_mem(0xC008_3060, move |mem, regs| {
+        static mut N: u32 = 0;
+        // TEMP (vma layout probe): dump the first 24 words of up
+        // to 8 DISTINCT user VMAs (keyed by vma addr) with a sample
+        // fault addr each. Comparing file-backed (text 0x8000,
+        // mmap 0x400xxxxx) vs anonymous (stack 0xBECxxxxx, brk)
+        // reveals which word is vm_file (NULL for anonymous) —
+        // needed for anonymous-zero seeding (fixmap-invisible
+        // kmap_atomic zeroing leaves stale lowmem content that
+        // poisons .bss/stack, e.g. 0x201A8=0xFF0A0000). Remove
+        // after the offset is named.
+        static mut ND: u32 = 0;
+        static mut VISTOS: [u32; 8] = [0; 8];
+        unsafe {
+            if N < 40 {
+                N += 1;
+                let n = N;
+                eprintln!("HMMF#{n} f={} vma={:#x} addr={:#x} task={:#x}", unsafe { FATIA_ATUAL }, regs[1], regs[2], mem.read_u32((regs[13] & !0x1FFF).wrapping_add(12)).unwrap_or(0xDEAD));
+            }
+            let vma = regs[1];
+            let addr = regs[2];
+            // Dedup by hand (no .contains: borrowing a static mut
+            // trips static_mut_refs; indexed Copy reads/writes are
+            // fine, same as TTBR_CACHE elsewhere).
+            let mut seen = false;
+            let mut k = 0;
+            while k < 8 {
+                if VISTOS[k] == vma {
+                    seen = true;
+                    break;
+                }
+                k += 1;
+            }
+            if addr < 0xC000_0000 && ND < 8 && !seen {
+                VISTOS[ND as usize] = vma;
+                ND += 1;
+                let mut vw = [0u32; 24];
+                for (i, s) in vw.iter_mut().enumerate() {
+                    *s = mem.read_u32(vma.wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
+                }
+                eprintln!("VMADUMP f={} addr={:#x} vma={:#x} words={vw:#x?}", unsafe { FATIA_ATUAL }, addr, vma);
+            }
+        }
+    });
+    // TEMP (find_vma entry 0xC0084F4C): log mm+addr lookups. The
+    // stack/text faults SIGSEGV without any FINDEXT/EXPAND/HMMF
+    // firing — if find_vma never runs for them, the path skips
+    // VMA lookup entirely (mmap_sem contention? wrong mm?).
+    // Cap 8.
+    cpu.trap_pc_mem(0xC008_4F4C, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 8 {
+                N += 1;
+                let n = N;
+                let ti = regs[13] & !0x1FFF;
+                eprintln!("FINDVMA#{n} f={} mm={:#x} addr={:#x} task={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[1], mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD), regs[14]);
+            }
+        }
+    });
+    // TEMP (GOT value at init+0x1A838 `bx ip`): log ip (=ip after
+    // `ldr ip, [pc]` of the GOT slot at 0x1A83C). The file holds
+    // 0x00015119 there; zeros mean the data page was mirrored from
+    // stale/empty content (or never correctly installed).
+    // Cap 3.
+    cpu.trap_pc_mem(0x0001_A838, move |_mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 3 {
+                N += 1;
+                eprintln!("GOTVAL f={} ip={:#x} lr={:#x} sp={:#x}", unsafe { FATIA_ATUAL }, regs[12], regs[14], regs[13]);
+            }
+        }
+    });
+    // TEMP (assert entry 0x126C4): init dies via abort()
+    // (sigaction/getpid/kill-SIGABRT/exit-127 chain at 0x12722+)
+    // with lr=0x1275B. 0x126C4 looks like __assert2 (formats then
+    // aborts inline). Log r0-r3 + lr and try the C strings they
+    // point to (file/expr/message name the failed assertion).
+    // One-shot +1 spare. Remove once named.
+    cpu.trap_pc_mem(0x0001_26C4, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 2 {
+                N += 1;
+                let mut ss = String::new();
+                for (i, r) in [regs[0], regs[1], regs[2], regs[3]].iter().enumerate() {
+                    let v = *r;
+                    let s = if (0x1000..0xC000_0000).contains(&v) {
+                        match mem.read(v, 48) {
+                            Ok(b) => {
+                                let z = b.iter().position(|&x| x == 0).unwrap_or(b.len());
+                                format!("{:?}", String::from_utf8_lossy(&b[..z]))
+                            }
+                            Err(_) => String::from("<unmapped>"),
+                        }
+                    } else {
+                        format!("{v:#x}")
+                    };
+                    ss.push_str(&format!(" r{i}={s}"));
+                }
+                eprintln!("ASSERT f={} lr={:#x} sp={:#x}{ss}", unsafe { FATIA_ATUAL }, regs[14], regs[13], ss = ss);
+            }
+        }
+    });
+    // Stack-guard note (init 0xA5E4, was 0xA6F4): the canary
+    // check aborted boot until the Thumb-push rollback fix; it
+    // passes genuinely now ([r0]==[r7]==guard, sp stable —
+    // proven live linux356). Trap removed with the fix.
     // TEMP (flush runaway 0xC0046C50): release_console_sem's inner
     // scan increments r5 per byte looking for '\n'; the r5==r7
+    // termination check sits outside the inner loop. If r5 runs past
+    // r7 (no newline in range, corrupt indices), the scan never
     // reaches the drivers or the check — masked spin forever. Log
     // the first 5 runaways (r5, r7). Never firing kills this theory.
+    // TEMP (USB flush complete 0xC0154E14): flush_endpoint_hw
+    // initiates by writing mask to [QH+0x1B4], then polls for the
+    // controller to clear ([r2+0x1B4] & r4, then +0x1B8) with
+    // udelay(10M) between — a ~35M-instruction busy wait per
+    // iteration that nothing clears (no USB engine modeled; QH
+    // lives in vmalloc RAM, reads 0xFFFFFFFF forever). Lively
+    // deadlock: ticks preempt the spin, so the system looks alive
+    // (sched/wait progress) while init's workqueue flush never
+    // drains. Host-side completion: write 0 to both status words
+    // on every hit (uncapped — the loop must terminate the same
+    // iteration), log first 3. Revisit with a real USB model.
+    cpu.trap_pc_mem(0xC015_4E14, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            let r5 = regs[5];
+            let r2 = mem.read_u32(r5.wrapping_add(12)).unwrap_or(0xDEAD);
+            let va = r2.wrapping_add(0x1B4);
+            if N < 3 {
+                N += 1;
+                let n = N;
+                let val = mem.read_u32(va).unwrap_or(0xDEAD);
+                eprintln!("FLUSH#{n} f={} r5={r5:#x} r2={r2:#x} addr={va:#x} val={val:#x} (completing)", unsafe { FATIA_ATUAL });
+            }
+            let _ = mem.write_u32(va, 0);
+            let _ = mem.write_u32(va.wrapping_add(4), 0);
+        }
+    });
     cpu.trap_pc_mem(0xC004_6C50, move |_mem, regs| {
         static mut N: u32 = 0;
         unsafe {
@@ -2709,29 +3234,30 @@ pub static mut AUDIT_LATCH: bool = false;
         }
     });
     // TEMP (schedule_timeout entry 0xC02133D0): timeout value + who.
-    // r0 = timeout (0x7FFFFFFF = infinite). The init thread parks
-    // right after genl_init entry (NINITCALL f=82072, SCHED#32
-    // schedule_timeout at f=82074, then only workers/idle). r0
-    // names finite-vs-forever; lr names the waiter.
+    // r0 = timeout (0x7FFFFFFF = infinite). Revived 2026-10-24: the
+    // 57s wall parks init once in schedule_timeout (SCHED#173,
+    // f≈103k, never returns) inside synaptics_ts_probe — the old
+    // cap (12) died in the 1.48s era. Cap 300 + late stack dumps
+    // (fresh counter) to name the exact wait.
     cpu.trap_pc_mem(0xC021_33D0, move |mem, regs| {
         static mut NSTO: u32 = 0;
+        static mut NSTK: u32 = 0;
         unsafe {
-            // Skip the early init/kthreadd handshake churn (f<81800);
-            // the target is the genl_init park (entry f=82072).
-            if FATIA_ATUAL >= 81800 && NSTO < 12 {
+            // Skip the early init/kthreadd handshake churn (f<80000).
+            if FATIA_ATUAL >= 80000 && NSTO < 300 {
                 NSTO += 1;
                 let n = NSTO;
                 let ti = regs[13] & !0x1FFF;
                 let task = mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
                 eprintln!("STIME#{n} f={} timeout={:#x} ti={ti:#x} task={task:#x} lr={:#x} sp={:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[14], regs[13]);
-                // Past genl entry: dump the waiter's stack so the
-                // return chain (wait_for_common <- waiter) names the
-                // exact completion site. Cap keeps it to ~1 hit.
-                if unsafe { FATIA_ATUAL } >= 82000 {
-                    let mut buf = vec![0u8; 96];
-                    if mem.read(regs[13], 96).map(|s| buf.copy_from_slice(s)).is_ok() {
+                // Late era: dump the waiter's stack so the return
+                // chain above schedule_timeout names the exact wait.
+                if unsafe { FATIA_ATUAL } >= 100000 && NSTK < 8 {
+                    NSTK += 1;
+                    let mut buf = vec![0u8; 192];
+                    if mem.read(regs[13], 192).map(|s| buf.copy_from_slice(s)).is_ok() {
                         let words: Vec<String> = buf.chunks(4).map(|w| format!("{:02x?}", w)).collect();
-                        eprintln!("SSTK f={} sp={:#x} {}", unsafe { FATIA_ATUAL }, regs[13], words.join(" "));
+                        eprintln!("SSTK-LATE f={} sp={:#x} {}", unsafe { FATIA_ATUAL }, regs[13], words.join(" "));
                     }
                 }
             }
@@ -3007,12 +3533,16 @@ pub static mut AUDIT_LATCH: bool = false;
             }
         }
     });
-    // TEMP (tick re-arm 0xC0065164): the +1-period lead in the
-    // PROGEV mirror (2026-10-24) made program_event succeed for
-    // real (was_r0=0 from the 2nd call on) — the MATCH plant is now
-    // REMOVED so the guest's own set_next_event drives the
-    // hardware (expect ~COUNT+327, 10ms ticks). regs[0]=0 stays as
-    // a no-op safety net (success already returns 0) + logging.
+    // TEMP (tick re-arm 0xC0065164): force RESTORED 2026-10-24 —
+    // the observe-only run proved program_event NEVER succeeds
+    // alone (permanent -ETIME, frozen MATCH, dead boot: only 28
+    // klog lines, guest time dragged by the watchdog to a 335s
+    // posix BUG). regs[0]=0 lets the retry loop exit so ticks
+    // complete and boot progresses (healthy 10ms guest-driven
+    // MATCH deltas observed with it). The NESTED-delivery hazard
+    // this force enables is now covered by the `pode_irq` mode gate
+    // in the backend (no delivery into IRQ/FIQ/ABT/UND). Revisit
+    // both once past /init.
     cpu.trap_pc_mem(0xC006_5164, move |mem, regs| {
         static mut NBR: u32 = 0;
         unsafe {
@@ -3021,7 +3551,7 @@ pub static mut AUDIT_LATCH: bool = false;
             if n <= 10 || n % 20000 == 0 {
                 let tm = mem.read_u32(0xE000_1000).unwrap_or(0xDEAD);
                 let tc = mem.read_u32(0xE000_1004).unwrap_or(0xDEAD);
-                eprintln!("TICKBRK#{n} f={} was_r0={:#x} MATCH={tm:#x} COUNT={tc:#x} (plant removed, guest-driven)", unsafe { FATIA_ATUAL }, regs[0]);
+                eprintln!("TICKBRK#{n} f={} was_r0={:#x} MATCH={tm:#x} COUNT={tc:#x} (forced success + mode gate)", unsafe { FATIA_ATUAL }, regs[0]);
             }
         }
         regs[0] = 0;
@@ -3273,17 +3803,19 @@ pub static mut AUDIT_LATCH: bool = false;
     });
     // TEMP (ATAG cmdline expand, one-shot at handoff 0x88015244):
     // force periodic ticks via `nohz=off highres=off` (retire the
-    // host re-arm): the CMDLINE tag has only 4 free bytes but the
-    // suffix needs 22. Shift the tail ([0x144..NONE] inclusive)
-    // down 32 bytes, grow CMDLINE 75->83 words, append. The kernel
-    // walks tags sequentially so absolute offsets don't matter.
-    // Applies to VA src, PA mirror, and VA kernel copy.
+    // host re-arm) plus `initcall_debug` (name the post-RTC hang:
+    // the kernel then logs every initcall entry+return). The CMDLINE
+    // tag has only 4 free bytes but the suffix needs 38. Shift the
+    // tail ([0x144..NONE] inclusive) down 64 bytes, grow CMDLINE
+    // 75->91 words, append. The kernel walks tags sequentially so
+    // absolute offsets don't matter. Applies to VA src, PA mirror,
+    // and VA kernel copy.
     cpu.trap_pc_mem(0x8801_5244, move |mem, _regs| {
         static mut NAT: u32 = 0;
         unsafe {
             if NAT < 1 {
                 NAT += 1;
-                let sufixo = b" nohz=off highres=off";
+                let sufixo = b" nohz=off highres=off initcall_debug init=/init";
                 // Locate CMDLINE tag and list end.
                 let (mut coff, mut csz) = (0u32, 0u32);
                 let (mut fim, mut off) = (0u32, 0u32);
@@ -3303,6 +3835,13 @@ pub static mut AUDIT_LATCH: bool = false;
                     off += sz * 4;
                 }
                 if csz == 75 {
+                    // Log the ORIGINAL cmdline once (provenance: what the
+                    // SPL built — root=/console=/init= live here).
+                    {
+                        let mut cur0 = vec![0u8; 320];
+                        let _ = mem.read(0x8000_0100 + coff + 8, 320).map(|s| cur0.copy_from_slice(s));
+                        eprintln!("ATAGCMD0 orig={:?}", String::from_utf8_lossy(&cur0));
+                    }
                     // Read tail [coff_end .. fim), shift +32, grow tag.
                     let ini = 0x8000_0100u32.wrapping_add(coff + csz * 4);
                     let mut cauda = vec![0u8; (fim - (coff + csz * 4)) as usize];
@@ -3316,12 +3855,12 @@ pub static mut AUDIT_LATCH: bool = false;
                     nova.extend_from_slice(sufixo);
                     nova.push(0);
                     eprintln!("ATAGCMD cap0={cap0} len={fim0} ok={okr} newlen={} tailbytes={} okread={ok}", nova.len() - 1, cauda.len());
-                    if ok && okr && nova.len() <= (csz as usize + 8) * 4 - 8 {
-                        // Shift tail down 32 B in all three mappings,
-                        // grow CMDLINE 75 -> 83 words, write new string.
+                    if ok && okr && nova.len() <= (csz as usize + 16) * 4 - 8 {
+                        // Shift tail down 64 B in all three mappings,
+                        // grow CMDLINE 75 -> 91 words, write new string.
                         for b in [0x8000_0100u32, 0x1000_0100, 0xC000_0100] {
-                            let _ = mem.write_u32(b + coff, csz + 8);
-                            let _ = mem.write(b + coff + csz * 4 + 32, &cauda);
+                            let _ = mem.write_u32(b + coff, csz + 16);
+                            let _ = mem.write(b + coff + csz * 4 + 64, &cauda);
                             let w = mem.write(b + coff + 8, &nova).is_ok();
                             eprintln!("ATAGSFT base={b:#x} w={w}");
                         }
@@ -3446,6 +3985,20 @@ pub static mut AUDIT_LATCH: bool = false;
     // Kernel-VA pages (0xC0000000+): uncapped — the kernel faults in
     // megabytes legitimately; repeats still stop the run.
     let mut mapeadas_kern: Vec<u32> = Vec::new();
+    // User-VA pages resolved via the guest page tables (TTBR0 walk):
+    // uncapped — the ELF loader maps /init's segments, stack and
+    // brk page by page; repeats still stop the run.
+    let mut mapeadas_usr: Vec<u32> = Vec::new();
+    // User pages already handed to the guest's abort handler: a
+    // same-(page, pc) fault AFTER a delivery means the guest
+    // retried without a visible fix. Allow a handful per (page,
+    // pc) — recurring legitimate faults (kernel uaccess fixup
+    // returns -EFAULT and the caller moves on; a later retry or
+    // a different copy phase refaults) must proceed; a tight
+    // livelock burns the budget fast and still stops. (Page-only
+    // keying stopped linux328's 0xBEC0A000 kernel-copy fault on a
+    // legitimate second touch.)
+    let mut abortadas: Vec<((u32, u32), u32)> = Vec::new();
     // Host frame hook watermarks: serial bytes already handed out.
     let mut tap_marca = 0usize;
     // TEMP/RX work: separate watermark for tap channel 0 (line-input
@@ -3462,7 +4015,11 @@ pub static mut AUDIT_LATCH: bool = false;
         unsafe { FATIA_ATUAL = fatia; }
         match cpu.run(pc, instrs_por_fatia).unwrap() {
             StopReason::Budget => {
-                pc = cpu.read_reg(crate::cpu::Reg::Pc);
+                // Preserve Thumb across slices: run() sets T from pc
+                // bit0, and Thumb pcs are even — a bare read would
+                // resume ARM and mis-execute Thumb userspace.
+                let thumb = cpu.estado_completo().1 & 0x20 != 0;
+                pc = cpu.read_reg(crate::cpu::Reg::Pc) | if thumb { 1 } else { 0 };
                 // Host drain for channel 3 (slot `0x882A94FC + 3*16`,
                 // data at constant `0x882A24FC + 3*4 KiB`).
                 let slot = 0x882A_952C;
@@ -3709,28 +4266,69 @@ pub static mut AUDIT_LATCH: bool = false;
                     // scheduler ticks, softirqs, timer wheel), the
                     // msleep waiter wakes and boot proceeds; then
                     // retire the kick (or replace with nohz=off).
+                    // 2026-10-24: the UNCONDITIONAL unmask (set_cpsr
+                    // clearing I at a slice boundary) violates guest
+                    // irqsave critical sections: clearing I mid-section
+                    // lets a tick deliver inside it, and the ISR's path
+                    // eventually reaches scheduler_tick with I=0 →
+                    // posix BUG_ON(!irqs_disabled()) (racy: 27s vs 54s
+                    // walls). The mode gate doesn't cover this (mode
+                    // is SVC in a critical section). Fix: unmask ONLY
+                    // after a PROLONGED mask (30 consecutive I=1 slice
+                    // boundaries ≈ 60k instructions — the parked-masked
+                    // idle signature; critical sections are <100 ins
+                    // and never trip it). MATCH plant + handler pin +
+                    // dirty stay unconditional (a pending edge while
+                    // masked is harmless — served at the guest's own
+                    // unmask; the mode gate still defers delivery out
+                    // of IRQ/FIQ). The prolonged counter resets on any
+                    // observed unmask.
                     if fatia >= 100000 && fatia % 100 == 0 {
-                        let tm = cpu.read_u32(0xE000_1000).unwrap_or(0);
-                        let tc = cpu.read_u32(0xE000_1004).unwrap_or(0);
-                        // Plant when MATCH is stale (behind COUNT) or only
-                        // just ahead: MATCH <= COUNT+100 covers both (no
-                        // wrapping-subtlety: values are far from 2^32).
-                        // A stale MATCH means no edge has fired for a
-                        // whole tick and the latch is consumed.
-                        if tm <= tc.wrapping_add(100) {
-                            let _ = cpu.write_u32(0xE000_1000, tc.wrapping_add(327));
-                        }
-                        let _ = cpu.write_u32(0xC02A_43C0 + 0x2C, 0xC006_50DC);
                         let (_, cpsr_antes, _, _) = cpu.estado_completo();
-                        if cpsr_antes & 0x80 != 0 {
-                            cpu.set_cpsr(cpsr_antes & !0x80);
-                        }
-                        cpu.marca_timer_sujo();
-                        static mut NKICK: u32 = 0;
-                        unsafe {
-                            if NKICK < 3 {
-                                NKICK += 1;
-                                eprintln!("KICK f={fatia} MATCH was {tm:#x} vs COUNT {tc:#x}, I was {}", (cpsr_antes >> 7) & 1);
+                        let modo = cpsr_antes & 0x1F;
+                        // Skip everything while in IRQ/FIQ mode (ISR in
+                        // flight) — nested if, NOT continue: the rest of
+                        // the slice harness must still run.
+                        if modo != 0x12 && modo != 0x11 {
+                            let tm = cpu.read_u32(0xE000_1000).unwrap_or(0);
+                            let tc = cpu.read_u32(0xE000_1004).unwrap_or(0);
+                            // Plant when MATCH is stale (behind COUNT) or only
+                            // just ahead: MATCH <= COUNT+100 covers both (no
+                            // wrapping-subtlety: values are far from 2^32).
+                            // A stale MATCH means no edge has fired for a
+                            // whole tick and the latch is consumed.
+                            if tm <= tc.wrapping_add(100) {
+                                let _ = cpu.write_u32(0xE000_1000, tc.wrapping_add(327));
+                            }
+                            let _ = cpu.write_u32(0xC02A_43C0 + 0x2C, 0xC006_50DC);
+                            static mut NMASK: u32 = 0;
+                            unsafe {
+                                if cpsr_antes & 0x80 != 0 {
+                                    NMASK += 1;
+                                } else {
+                                    NMASK = 0;
+                                }
+                                // Unmask only a genuinely parked mask:
+                                // the idle wall holds I=1 for 100k+
+                                // slices; a critical section never
+                                // survives 30 boundaries.
+                                if NMASK >= 30 {
+                                    cpu.set_cpsr(cpsr_antes & !0x80);
+                                    NMASK = 0;
+                                    static mut NKU: u32 = 0;
+                                    if NKU < 5 {
+                                        NKU += 1;
+                                        eprintln!("KICK-UNMASK f={fatia} after prolonged mask");
+                                    }
+                                }
+                            }
+                            cpu.marca_timer_sujo();
+                            static mut NKICK: u32 = 0;
+                            unsafe {
+                                if NKICK < 3 {
+                                    NKICK += 1;
+                                    eprintln!("KICK f={fatia} MATCH was {tm:#x} vs COUNT {tc:#x}, I was {}", (cpsr_antes >> 7) & 1);
+                                }
                             }
                         }
                     }
@@ -3824,6 +4422,19 @@ pub static mut AUDIT_LATCH: bool = false;
                             }
                         }
                         eprintln!("TIMERSTATE f={fatia} ENSET30={e30:#x} ENCLR20={e20:#x} STATUS80={e80:#x} MATCH={tm:#x} COUNT={tc:#x} EN={te:#x} DMATCH={dm:#x} DCOUNT={dc:#x} gate={tg:#x} jiffies={jf:#x} task={task:#x} I={ibit} modo={modo:#x} nent={nent} ndes={ndes} nmas={nmas} nwfi={nwfi} fpc={fpc:#x} stk={stk8:#x?} park={park:#x?}");
+                        // TEMP (frozen init stack, one-shot at f=400000):
+                        // the 57s wall parks init once (schedule_timeout
+                        // at f≈103k, never returns) — its kernel stack is
+                        // frozen, so one top-512B dump names the whole
+                        // wait chain (probe → wait → timeout). Init stack
+                        // base 0xC6016000, grows down from +0x2000.
+                        if fatia == 400000 {
+                            let mut froze = [0u32; 128];
+                            for (i, s) in froze.iter_mut().enumerate() {
+                                *s = cpu.read_u32(0xC601_6000u32.wrapping_add(0x1E00).wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
+                            }
+                            eprintln!("FROZEN-INIT f={fatia} top512={froze:#x?}");
+                        }
                         // TEMP (desc watch): dump 8 words at 0xC02A4468
                         // (the irq_desc/action the dispatch uses) on
                         // CHANGE, cap 10. Names who sets PENDING / moves
@@ -4283,6 +4894,172 @@ pub static mut AUDIT_LATCH: bool = false;
                     }
                     // TEMP (kernel fault): records who accesses where
                     // (8k Budget pass without this; remove when mapping).
+                    // User VA via guest page tables (TTBR0 walk): the ELF
+                    // loader maps /init's segments, stack and brk in the
+                    // user pgd, which the flat MMU never consulted — every
+                    // user page faulted. Resolve VA->PA, mirror the 4 KiB
+                    // physical page (seeded copy; RAM is coherent), track
+                    // uncapped (dozens of legit pages). SPL-alias and
+                    // known windows keep their existing arm below; repeat
+                    // faults and unmapped VAs still stop the run.
+                    StopReason::MemoryFault { addr, pc: pc_falta }
+                        if addr < 0xC000_0000
+                            && traduz(addr & !0xFFF).is_none()
+                            && janela_de(addr & !0xFFF).is_none() =>
+                    {
+                        let base = addr & !0xFFF;
+                        // First user fault: the SPL low image (0x0-0x80000,
+                        // read-only leftover) shadows ALL of userspace
+                        // text — the guest would execute SPL bytes as
+                        // /init (proven live: 0x80BC decodes as SPL).
+                        // Carve it out wholesale once; the kernel runs
+                        // from high mappings (vectors are high) and never
+                        // needs it again. Only on walk-miss pages... no:
+                        // unconditionally here, since text pages never
+                        // fault (mapped+executable SPL bytes) and would
+                        // otherwise run garbage forever.
+                        static mut SPL_FORA: bool = false;
+                        unsafe {
+                            if !SPL_FORA {
+                                SPL_FORA = true;
+                                let _ = cpu.desmapeia_intervalo(0x0, 0x8_0000);
+                                eprintln!("SPL-UNMAP f={} (low image carved for userspace)", unsafe { FATIA_ATUAL });
+                            }
+                        }
+                        if mapeadas_usr.contains(&base) {
+                            parada = outra;
+                            break;
+                        }
+                        // TEMP (UDECIDE): user-arm MISS decisions only
+                        // (HITs already log via UFAULT). Cap 200.
+                        // Remove after the bec0a000 stall is named.
+                        static mut NUD: u32 = 0;
+                        match caminha_pt_usuario(&mut cpu, base) {
+                            Some((pa, bruto, l2base)) => {
+                                // Carve out stale bytes first: low user
+                                // pages collide with the SPL image mapping
+                                // (0x0-0x80000, read-only leftover the
+                                // buddy allocator recycled). The guest
+                                // installed PTEs, so the new content wins.
+                                // Carve failure stops the run (unlike the
+                                // content seed below, which degrades to
+                                // zeros).
+                                if cpu.desmapeia_intervalo(base, 0x1000).is_err() {
+                                    parada = outra;
+                                    break;
+                                }
+                                if cpu.map_zeroed("usuario_ptw", base, 0x1000).is_err() {
+                                    parada = outra;
+                                    break;
+                                }
+                                // Seed from the physical page THROUGH the
+                                // lowmem alias (live contents — see
+                                // le_ram_fisica; the PA bank is stale).
+                                let mut pg = vec![0u8; 0x1000];
+                                if le_ram_fisica(&mut cpu, pa, &mut pg) {
+                                    let _ = cpu.write_mem(base, &pg);
+                                }
+                                mapeadas_usr.push(base);
+                                static mut NUSR: u32 = 0;
+                                unsafe {
+                                    if NUSR < 40 {
+                                        NUSR += 1;
+                                        let mut hb = [0u8; 16];
+                                        let head = if cpu.read_mem(base, &mut hb).is_ok() { hb.to_vec() } else { vec![] };
+                                        let mut gb = [0u8; 16];
+                                        let got = if cpu.read_mem(base.wrapping_add(0x830), &mut gb).is_ok() { gb.to_vec() } else { vec![] };
+                                        // L2 neighborhood: real installs
+                                        // show isolated valid entries;
+                                        // stale tables show garbage.
+                                        let mut nb = [0u8; 32];
+                                        let l2va = l2base.wrapping_add(0xB000_0000).wrapping_sub(16);
+                                        let nbs = if cpu.read_mem(l2va, &mut nb).is_ok() { nb.to_vec() } else { vec![] };
+                                        eprintln!("UFAULT f={} va={base:#x} pa={pa:#x} raw={bruto:#x} l2t={l2base:#x} head={head:02x?} got={got:02x?} l2n={nbs:02x?}", unsafe { FATIA_ATUAL });
+                                    }
+                                }
+                                // Preserve Thumb: run() sets T from pc bit0,
+                                // and Thumb fault addresses are even — a
+                                // bare pc_falta would resume ARM and
+                                // mis-execute Thumb bytes as ARM (proven
+                                // live: 0x15118 Thumb slid into garbage
+                                // and jumped to 0x195311C with sp
+                                // untouched). T bit (0x20) round-trips it.
+                                let thumb = cpu.estado_completo().1 & 0x20 != 0;
+                                pc = pc_falta | if thumb { 1 } else { 0 };
+                            }
+                            None => {
+                                // TEMP (UDECIDE miss side): log the abort
+                                // decision inputs — abortadas state, mode,
+                                // vector shape. Cap shared 40 above.
+                                unsafe {
+                                    if NUD < 200 {
+                                        NUD += 1;
+                                        let (_, cj, _, _) = cpu.estado_completo();
+                                        let vet = if cpu.le_cp15(0x80).unwrap_or(0) & (1 << 13) != 0 { 0xFFFF_0000 } else { 0x0 } | if addr == pc_falta { 0x0C } else { 0x10 };
+                                        let w = cpu.read_u32(vet).unwrap_or(0xDEAD);
+                                        let ja: u32 = abortadas.iter().find(|(k, _)| *k == (base, pc_falta)).map_or(0, |(_, n)| *n);
+                                        eprintln!("UDECIDE f={} va={base:#x} MISS ja={ja} modo={:#x} w={w:#x}", unsafe { FATIA_ATUAL }, cj & 0x1F);
+                                    }
+                                }
+                                // No guest mapping yet: deliver a data
+                                // abort so the kernel's own fault handler
+                                // installs PTEs (demand paging faults on
+                                // real HW too — VMA lookup, zero/file
+                                // pages, COW — all guest-side from here).
+                                // Cache TTBR0 + task for the PTE-mirror
+                                // trap (which only gets mem).
+                                // Same (page, pc) faulting again after a
+                                // delivery: allow a handful (recurring
+                                // legitimate faults proceed), then stop
+                                // a tight livelock. Budget 10 per key.
+                                let vezes = abortadas.iter().find(|(k, _)| *k == (base, pc_falta)).map_or(0, |(_, n)| *n);
+                                if vezes >= 10 {
+                                    eprintln!("ABORT-LOOP f={} va={base:#x} pc={pc_falta:#x} ({vezes}x, stopping)", unsafe { FATIA_ATUAL });
+                                    parada = outra;
+                                    break;
+                                }
+                                unsafe {
+                                    TTBR_CACHE = cpu.le_cp15(0x100).unwrap_or(0);
+                                    let ti0 = cpu.read_reg(crate::cpu::Reg::Sp) & !0x1FFF;
+                                    TTBR_TASK = cpu.read_u32(ti0.wrapping_add(12)).unwrap_or(0xDEAD);
+                                }
+                                // No nested aborts (single spsr_abt) and
+                                // none from ABT/FIQ mode: those would
+                                // corrupt state — stop loudly.
+                                let (_, cpsr_hj, _, _) = cpu.estado_completo();
+                                let modo_hj = cpsr_hj & 0x1F;
+                                if modo_hj == 0x17 || modo_hj == 0x11 {
+                                    parada = outra;
+                                    break;
+                                }
+                                let prefetch = addr == pc_falta;
+                                // Vector sanity: the kernel copies stubs
+                                // to 0xFFFF0000 early; each vector is
+                                // `ldr pc, [pc, #imm]` or a plain `b`
+                                // to the handler. A zero/garbage vector
+                                // means the abort would jump nowhere —
+                                // stop with the evidence.
+                                let alto = cpu.le_cp15(0x80).unwrap_or(0) & (1 << 13) != 0;
+                                let vet = if alto { 0xFFFF_0000 } else { 0x0 }
+                                    | if prefetch { 0x0C } else { 0x10 };
+                                let w = cpu.read_u32(vet).unwrap_or(0);
+                                let forma = (w & 0xFFFF_F000 == 0xE59F_F000)
+                                    || (w & 0xFF00_0000 == 0xEA00_0000);
+                                if !forma {
+                                    eprintln!("ABORT-NOVET f={} vet={vet:#x} w={w:#x}", unsafe { FATIA_ATUAL });
+                                    parada = outra;
+                                    break;
+                                }
+                                cpu.entra_aborto(addr, 0x5, prefetch);
+                                if let Some(slot) = abortadas.iter_mut().find(|(k, _)| *k == (base, pc_falta)) {
+                                    slot.1 += 1;
+                                } else {
+                                    abortadas.push(((base, pc_falta), 1));
+                                }
+                                pc = cpu.read_reg(crate::cpu::Reg::Pc) & !1;
+                            }
+                        }
+                    }
                     StopReason::MemoryFault { addr, pc: pc_falta }
                         if mapeadas.len() < 64 =>
                     {
@@ -4522,6 +5299,14 @@ pub static mut AUDIT_LATCH: bool = false;
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn sonda_traduz_janela_1f000() {
+        // The 0x1FCE0 user fault must reach the PT-walk arm: no SPL
+        // alias, no suspect window.
+        assert_eq!(traduz(0x1F000), None);
+        assert!(janela_de(0x1F000).is_none());
+    }
 
     fn caminho_do_spl() -> Option<PathBuf> {
         // Third-party blob, never committed; the test skips without it, in the

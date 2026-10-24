@@ -26,6 +26,16 @@ const MODO_USUARIO: u32 = 0x10;
 /// is gated and capped; TIMERSTATE samples this counter to show the
 /// true tick rate (monotonic — read-only for the harness).
 pub static mut ULTIMA_ENTREGA: u32 = 0;
+/// Total data/prefetch aborts delivered to the guest since reset
+/// (see entra_aborto): user page faults handled by the kernel's
+/// own do_page_fault instead of stopping the run.
+pub static mut TOTAL_ABORTOS: u32 = 0;
+/// Total SVC (syscall) exceptions delivered to the guest kernel
+/// since reset (see entra_svc): Linux userspace syscalls (set_tls
+/// first — it writes the TLS value to 0xFFFF0FF0, without which
+/// init segfaults on a null+8 store) run through the guest's own
+/// vector_swi instead of the semihosting stub.
+pub static mut TOTAL_SVC: u32 = 0;
 /// Total unmask edges (cpsie/exception-return/msr clearing I) since
 /// reset. TIMERSTATE samples it alongside deliveries: unmasks without
 /// deliveries = the line/edge gate is the blocker; no unmasks at all =
@@ -255,12 +265,184 @@ impl Interpretador {
         self.r[15] = if self.thumb() { alvo & !1 } else { alvo & !3 };
     }
 
+    /// Write a cached CP15 register (same key layout as the read
+    /// path). The harness uses it for FAR/DFSR on abort entry.
+    pub fn escreve_cp15(&mut self, chave: u32, valor: u32) {
+        match self.cp15.iter_mut().find(|(k, _)| *k == chave) {
+            Some(slot) => slot.1 = valor,
+            None => self.cp15.push((chave, valor)),
+        }
+    }
+
+    /// Take a data/prefetch abort for the fault at `r[15]` (which
+    /// sits AT the faulting pc for fault traps). lr = fault+8 for
+    /// data aborts, fault+4 for prefetch aborts (matching the
+    /// guest's `subs pc, lr, #8` / `#4` retry convention); r15 =
+    /// vector, mode ABT with I and A masked, FAR/FSR recorded. Delivers guest
+    /// page faults (do_page_fault) to the kernel instead of stopping
+    /// the run — mandatory for userspace: ELF demand-paging faults
+    /// on real hardware too. `fsr` is the fault status (0x5 section /
+    /// 0x7 page translation fault); `prefetch` selects the IFSR key
+    /// (0x281) and vector 0x0C, else DFSR (0x280) and 0x10.
+    /// Counts in TOTAL_ABORTOS. NOT re-entrant: the harness must
+    /// not call this while already in ABT mode (single spsr_abt).
+    pub fn entra_aborto(&mut self, addr_falta: u32, fsr: u32, prefetch: bool) {
+        let velho = self.cpsr;
+        unsafe {
+            TOTAL_ABORTOS = TOTAL_ABORTOS.wrapping_add(1);
+        }
+        static mut NABT: u32 = 0;
+        unsafe {
+            if NABT < 80 {
+                NABT += 1;
+                let n = NABT;
+                eprintln!("ABORT#{n} ins={} velho={velho:#x} pc={:#x} far={addr_falta:#x} fsr={fsr:#x} pre={prefetch}", self.instrucoes, self.r[15]);
+            }
+        }
+        // ABT-bank SP fallback (same root cause as IRQ: reset leaves
+        // it undefined; the kernel programs it in cpu_init). Private
+        // page — IRQ uses 0xC8300000, FIQ its lower half.
+        if self.r[13] == 0 {
+            const PILHA_ABT: u32 = 0xC831_0000;
+            const TAM_PILHA_ABT: usize = 0x1000;
+            if self.mem.read_u32(PILHA_ABT).is_err() {
+                let _ = self.mem.map_zeroed("pilha_abt", PILHA_ABT, TAM_PILHA_ABT);
+            }
+            self.r[13] = PILHA_ABT.wrapping_add(TAM_PILHA_ABT as u32);
+        }
+        // FAR (c6,c0,0 → 0x300), DFSR (c5,c0,0 → 0x280) / IFSR
+        // (c5,c0,1 → 0x281). Domain 0: translation faults only (the
+        // flat model has no permissions to violate).
+        self.escreve_cp15(0x300, addr_falta);
+        self.escreve_cp15(if prefetch { 0x281 } else { 0x280 }, fsr);
+        self.spsr[4] = velho;
+        // ARMv6 abort entry: mode ABT, ARM state, I and A masked.
+        // Switch banks FIRST (like entra_irq): writing r14 before
+        // the swap would be clobbered by the bank load.
+        self.troca_modo((velho & !(0x1F | T)) | 0x17 | 0x80 | 0x100);
+        // lr = fault+8 for data aborts (the guest's `subs pc, lr, #8`
+        // re-executes the faulting instruction), fault+4 for prefetch
+        // aborts (guest resumes with `subs pc, lr, #4`). r15 sits AT
+        // the fault for fault traps (unlike IRQ delivery, where it
+        // has advanced past — proven live: ABORT-VEC lr was fault+4
+        // with an r15+4 formula, and the prefetch path then skipped
+        // its faulting ldr and branched on stale ip=0, jumping to 0).
+        self.r[14] = self.r[15].wrapping_add(if prefetch { 4 } else { 8 });
+        // CP15 c1 (key 0x80) bit 13: high vectors.
+        let sctlr = self.cp15.iter().find(|(k, _)| *k == 0x80).map_or(0, |(_, v)| *v);
+        let vet = if sctlr & (1 << 13) != 0 { 0xFFFF_0000 } else { 0x0 };
+        self.r[15] = vet | if prefetch { 0x0C } else { 0x10 };
+    }
+
+    /// Take a Linux syscall (SVC) exception for the `svc` at `r[15]`
+    /// (which sits AT the faulting instruction): lr = next
+    /// instruction (fault+4 ARM, fault+2 Thumb — the guest resumes
+    /// with plain `movs pc, lr`), r15 = SWI vector 0x08, mode SVC
+    /// with I masked (A per spec untouched — our async aborts don't
+    /// exist, and the guest never observes it), T forced ARM.
+    /// Delivers userspace syscalls (set_tls first: it writes the
+    /// TLS value to 0xFFFF0FF0, without which init segfaults) to
+    /// the guest's own vector_swi instead of the semihosting stub.
+    /// Counts in TOTAL_SVC. NOT re-entrant (single spsr_svc): the
+    /// caller routes only USR-mode SVCs here; the harness must not
+    /// call this from SVC/ABT/FIQ.
+    pub fn entra_svc(&mut self) {
+        let velho = self.cpsr;
+        unsafe {
+            TOTAL_SVC = TOTAL_SVC.wrapping_add(1);
+        }
+        static mut NSVC: u32 = 0;
+        unsafe {
+            if NSVC < 300 {
+                NSVC += 1;
+                let n = NSVC;
+                eprintln!("SVC#{n} ins={} velho={velho:#x} pc={:#x} r7={:#x} r0={:#x}", self.instrucoes, self.r[15], self.r[7], self.r[0]);
+            }
+        }
+        // TEMP (exit-class watch): init dies via do_exit (no
+        // segfault) — catch exit/exit_group (r7=1/248), execve
+        // (r7=11), fork/clone (r7=2/120) with args + task + lr + 
+        // execve path. A service child failing execve (empty
+        // /system!) exits 127 normally; init itself exiting is the
+        // panic. Clone/fork presence separates the two stories.
+        if self.r[7] == 1 || self.r[7] == 248 || self.r[7] == 11 || self.r[7] == 2 || self.r[7] == 120 {
+            static mut NEX: u32 = 0;
+            unsafe {
+                if NEX < 10 {
+                    NEX += 1;
+                    let ti = self.r[13] & !0x1FFF;
+                    let task = self.mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
+                    let mut extra = String::new();
+                    if self.r[7] == 11 {
+                        if let Ok(s) = self.mem.read(self.r[0], 64) {
+                            let z = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+                            extra = format!(" path={:?}", String::from_utf8_lossy(&s[..z]));
+                        } else {
+                            extra = String::from(" path=<unmapped>");
+                        }
+                    }
+                    eprintln!("EXITCAL f={} r7={:#x} r0={:#x} r1={:#x} task={task:#x} lr={:#x} pc={:#x} mode={:#x}{extra}", self.instrucoes, self.r[7], self.r[0], self.r[1], self.r[14], self.r[15], self.cpsr & 0x1F);
+                }
+            }
+        }
+        // TEMP (open-path watch): log path args for open/creat/
+        // mknod/mkdir (r7=5/8/14/39) to see exactly which files
+        // init touches (does it open /dev/urandom? create it?
+        // where does the property/urandom path fail?). Cap 200.
+        // Remove with EXITCAL once the killer is named.
+        if matches!(self.r[7], 5 | 8 | 14 | 39) {
+            static mut NOP: u32 = 0;
+            unsafe {
+                if NOP < 200 {
+                    NOP += 1;
+                    let p = self.r[0];
+                    let nm = if (0x1000..0xC000_0000).contains(&p) {
+                        match self.mem.read(p, 64) {
+                            Ok(s) => {
+                                let z = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+                                format!("{:?}", String::from_utf8_lossy(&s[..z]))
+                            }
+                            Err(_) => String::from("<unmapped>"),
+                        }
+                    } else {
+                        format!("{p:#x}")
+                    };
+                    eprintln!("OPEN f={} r7={:#x} path={nm} flags={:#x}", self.instrucoes, self.r[7], self.r[1]);
+                }
+            }
+        }
+        // SVC-bank SP fallback (same root cause as IRQ/ABT: reset
+        // leaves it undefined; the kernel programs it in cpu_init).
+        // Private page; the kernel's own setup overwrites this later.
+        if self.r[13] == 0 {
+            const PILHA_SVC: u32 = 0xC832_0000;
+            const TAM_PILHA_SVC: usize = 0x1000;
+            if self.mem.read_u32(PILHA_SVC).is_err() {
+                let _ = self.mem.map_zeroed("pilha_svc", PILHA_SVC, TAM_PILHA_SVC);
+            }
+            self.r[13] = PILHA_SVC.wrapping_add(TAM_PILHA_SVC as u32);
+        }
+        self.spsr[3] = velho;
+        // ARMv6 SVC entry: mode SVC, ARM state, I masked. Switch
+        // banks FIRST (like entra_irq/entra_aborto): writing r14
+        // before the swap would be clobbered by the bank load.
+        // Thumb state read BEFORE the switch (troca_modo clears T).
+        let thumb = velho & T != 0;
+        self.troca_modo((velho & !(0x1F | T)) | 0x13 | 0x80);
+        // lr = next instruction (r15 sat AT the svc): the guest's
+        // `movs pc, lr` resumes after it.
+        self.r[14] = self.r[15].wrapping_add(if thumb { 2 } else { 4 });
+        // CP15 c1 (key 0x80) bit 13: high vectors.
+        let sctlr = self.cp15.iter().find(|(k, _)| *k == 0x80).map_or(0, |(_, v)| *v);
+        let vet = if sctlr & (1 << 13) != 0 { 0xFFFF_0000 } else { 0x0 };
+        self.r[15] = vet | 0x08;
+    }
+
     /// Take an IRQ before the instruction at `r[15]` executes.
     /// Counts every delivery in ULTIMA_ENTREGA (read by TIMERSTATE's
     /// per-slice log): the per-delivery ENTRA log is gated and capped,
     /// but the counter shows the true tick rate through the fault.
-    fn entra_irq(&mut self) {
-        let velho = self.cpsr;
+    fn entra_irq(&mut self) {        let velho = self.cpsr;
         unsafe {
             ULTIMA_ENTREGA = ULTIMA_ENTREGA.wrapping_add(1);
         }
@@ -359,6 +541,14 @@ impl Interpretador {
     /// for MMIO writes.
     pub fn marca_timer_sujo(&mut self) {
         self.timer_sujo = true;
+    }
+
+    /// Read a cached CP15 register by key (same key layout as the
+    /// MCR/MRC path: op1/CRn/CRm/op2). The harness uses it to read
+    /// TTBR0 (key 0x100: c2,c0,0) for the guest page-table walk on
+    /// user faults. None = the guest never wrote it.
+    pub fn le_cp15(&self, chave: u32) -> Option<u32> {
+        self.cp15.iter().find(|(k, _)| *k == chave).map(|(_, v)| *v)
     }
 
     /// Remove the memory-serving PC trap at `addr`, if any. Other armed
@@ -471,6 +661,42 @@ impl Interpretador {
     }
 
     fn es_mem(&mut self, addr: u32, dados: &[u8], pc: u32) -> Result<(), StopReason> {
+        // Canary watches (BSSWR/BSSRD/STKWR/VALWR) retired with the
+        // Thumb-push rollback fix: the guard lifecycle is named
+        // (seeder 0x1277C, copy 0xA5FA, check 0xA6F4) and the check
+        // passes genuinely. This hot path stays clean.
+        // TEMP (GOT-slot watch 0x1A83C): who zeroes the GOT entry the
+        // 0x1A834 ldr reads (file has 0x15119, guest reads 0)? Any
+        // 4-byte store to [0x1A838..0x1A844) logs pc + value. Cap 8.
+        // Remove once the zeroing writer is named.
+        // TEMP (kuser fill watch [0xFFFF0F00,0xFFFF1000)): init reads
+        // [0xFFFF0FF0] (pool 0xFFFF0FF0 in the 0x1259c getter) and gets
+        // 0, so *ptr=0 and r0=8 faults. The kernel should have copied
+        // helpers to 0xFFFF0F00+. Any 4-byte store in range logs
+        // pc + value — if silent, the copy never happens through our
+        // map (alias/stale-PA variant of the page-table issue). Cap 16.
+        if dados.len() == 4 && (0xFFFF_0F00..0xFFFF_1000).contains(&addr) {
+            static mut NKW: u32 = 0;
+            unsafe {
+                if NKW < 16 {
+                    NKW += 1;
+                    let n = NKW;
+                    let val = u32::from_le_bytes([dados[0], dados[1], dados[2], dados[3]]);
+                    eprintln!("KUSERW#{n} ins={} pc={pc:#x} addr={addr:#x} val={val:#x}", self.instrucoes);
+                }
+            }
+        }
+        if dados.len() == 4 && (0x1A838..0x1A844).contains(&addr) {
+            static mut NGW: u32 = 0;
+            unsafe {
+                if NGW < 8 {
+                    NGW += 1;
+                    let n = NGW;
+                    let val = u32::from_le_bytes([dados[0], dados[1], dados[2], dados[3]]);
+                    eprintln!("GOTWR#{n} ins={} pc={pc:#x} addr={addr:#x} val={val:#x}", self.instrucoes);
+                }
+            }
+        }
         // VIC EN_SET/EN_CLEAR semantics (exact, per-write): gpio/vic
         // setup writes single enable bits within one slice; plain-store
         // keeps only the last (proven live: 0x982 -> 0x102, IRQ7 lost,
@@ -701,7 +927,7 @@ impl Interpretador {
             0b010 | 0b011 => self.arm_ls(instr, pc),
             0b100 => self.arm_bloco(instr, pc),
             0b101 => self.arm_b(instr, pc),
-            0b111 if instr & (1 << 24) != 0 => self.svc(pc),
+            0b111 if instr & (1 << 24) != 0 => self.svc(instr, pc, false),
             0b110 | 0b111 => self.arm_coproc(instr, pc),
             _ => Err(StopReason::Exception { pc }),
         }
@@ -846,7 +1072,36 @@ impl Interpretador {
         Ok(true)
     }
 
-    fn svc(&mut self, pc: u32) -> Result<bool, StopReason> {
+    fn svc(&mut self, instr: u32, pc: u32, thumb: bool) -> Result<bool, StopReason> {
+        // Routing by SVC immediate. Semihosting numbers (SPL + unit
+        // test + standard): ARM #0x123456, #0xAB (also used by the
+        // test as an ARM imm), SPL's observed #0xCDAB89, Thumb #0xAB.
+        // Anything else from USR mode is a Linux syscall (EABI svc #0,
+        // OABI swi #0x90xxxx) → deliver to the guest kernel's
+        // vector_swi (entra_svc). The old path silently returned 0,
+        // which dropped set_tls (TLS value never reached 0xFFFF0FF0,
+        // so init's first TLS access read 0 and segfaulted on a
+        // null+8 store). Privileged modes keep the legacy
+        // semihosting stub below (SPL boot, kernel — neither issues
+        // Linux syscalls).
+        let imm = if thumb { instr & 0xFF } else { instr & 0xFF_FFFF };
+        let semihosting = matches!(imm, 0x123456 | 0xAB | 0xCDAB89);
+        if !semihosting && self.cpsr & 0x1F == MODO_USUARIO {
+            // USR entry never clobbers spsr[3] (SVC bank), so a
+            // single-level delivery is safe. (Nested SVC from SVC
+            // mode can't happen here — this arm only fires in USR.)
+            let alto = self.cp15.iter().find(|(k, _)| *k == 0x80).map_or(0, |(_, v)| *v) & (1 << 13) != 0;
+            let vet = if alto { 0xFFFF_0008 } else { 0x08 };
+            let w = self.mem.read_u32(vet).unwrap_or(0);
+            let forma = (w & 0xFFFF_F000 == 0xE59F_F000)
+                || (w & 0xFF00_0000 == 0xEA00_0000);
+            if !forma {
+                eprintln!("SVC-NOVET pc={pc:#x} vet={vet:#x} w={w:#x}");
+                return Err(StopReason::Exception { pc });
+            }
+            self.entra_svc();
+            return Ok(true);
+        }
         let op = self.r[0];
         let arg = self.r[1];
         match op {
@@ -1437,6 +1692,16 @@ impl Interpretador {
     /// coprocessors, MRC with Rd == 15 setting the flags) faults: accepting
     /// those silently would hide real behavior.
     fn arm_coproc(&mut self, instr: u32, pc: u32) -> Result<bool, StopReason> {
+        // LDC/STC to p15 (cache preload / maintenance hints — the
+        // `pld`-class ops in flush_pfn_alias, hit on the /init exec
+        // path via flush_dcache_page). The flat model has no caches:
+        // GuestMemory is directly coherent, so these are
+        // architecturally NOPs. Transfers for any other coprocessor
+        // (e.g. VFP data via p10/p11) still fault — silently
+        // accepting those would corrupt real state.
+        if (instr >> 25) & 7 == 0b110 && (instr >> 8) & 0xF == 0xF {
+            return Ok(false);
+        }
         if (instr >> 24) & 0xF != 0xE || instr & (1 << 4) == 0 {
             // TEMP (kernel CP15): which instruction fails.
             eprintln!("COPROC unk {instr:#x} @{pc:#x}");
@@ -1962,12 +2227,23 @@ impl Interpretador {
             self.r[13] = self.r[13].wrapping_add(n * 4);
             Ok(saltou)
         } else {
-            let mut addr = self.r[13].wrapping_sub(n * 4);
+            // Rollback on fault: sp is committed BEFORE the stores,
+            // so a mid-push fault (demand-paged stack growth) must
+            // restore it — otherwise the resume re-executes the push
+            // and decrements twice (proven live: init's canary slot
+            // drifted -24 = one 6-reg push double-applied, so the
+            // epilogue compared the wrong slot and popped the guard
+            // value into pc). Loads (pop/ldm) already commit last.
+            let anterior = self.r[13];
+            let mut addr = anterior.wrapping_sub(n * 4);
             self.r[13] = addr;
             for reg in 0..16 {
                 if lista & (1 << reg) != 0 {
                     let valor = self.le_reg(reg, pc, 0);
-                    self.es_mem(addr, &valor.to_le_bytes(), pc)?;
+                    if let Err(falha) = self.es_mem(addr, &valor.to_le_bytes(), pc) {
+                        self.r[13] = anterior;
+                        return Err(falha);
+                    }
                     addr = addr.wrapping_add(4);
                 }
             }
@@ -2008,7 +2284,7 @@ impl Interpretador {
     fn thumb_bcond(&mut self, instr: u16, pc: u32) -> Result<bool, StopReason> {
         let cond = u32::from((instr >> 8) & 0xF);
         if cond == 0xF {
-            return self.svc(pc);
+            return self.svc(u32::from(instr), pc, true);
         }
         if cond == 0xE {
             return Err(StopReason::Exception { pc });
@@ -2027,13 +2303,22 @@ impl Interpretador {
         let imm = u32::from(instr & 0x7FF);
         match prefixo {
             0b11110 => {
-                // Bit 1 goes out: the pair spans two halfwords and the offset is a word offset.
-                let base = pc.wrapping_add(4) & !2;
+                // Old-Thumb BL first half: LR = (fault pc + 4) +
+                // (sign-extended imm10 << 12), NO alignment masking —
+                // the fault pc+4 may have bit 1 set (e.g. pair at
+                // 0x8ECE: base 0x8ED2, not 0x8ED0). The old `& !2`
+                // sent such calls 2 bytes early, into padding that
+                // decoded as a BL second half with a stale odd LR
+                // (proven live: 0x8ED3+0xFFE=0x9ED1 odd-pc fault).
+                let base = pc.wrapping_add(4);
                 self.r[14] = base.wrapping_add(sext(imm, 11) << 12);
                 Ok(false)
             }
             0b11111 => {
                 let proxima = pc.wrapping_add(2);
+                // Unmasked (like the first half): a stale-LR pairing
+                // yields an odd target, which the fetch guard
+                // (pc & 1) rejects loudly as an Exception.
                 self.r[15] = self.r[14].wrapping_add(imm << 1);
                 self.r[14] = proxima | 1;
                 self.cpsr |= T;
@@ -2279,11 +2564,19 @@ impl CpuBackend for Interpretador {
             if self.instrucoes >= limite {
                 return Ok(StopReason::Budget);
             }
+            // Delivery gate: unmasked AND in a deliverable mode
+            // (USR/SVC/SYS). Delivering into IRQ/FIQ/ABT/UND nests
+            // entra_irq and clobbers the single spsr_irq — the
+            // posix-cpu-timers BUG_ON(!irqs_disabled()) wall. Computed
+            // once per loop top; every path below takes it.
+            let modo = self.cpsr & 0x1F;
+            let pode_irq = self.cpsr & 0x80 == 0
+                && (modo == 0x10 || modo == 0x13 || modo == 0x1F);
             // IRQ delivery. The line is polled every 64 instructions
             // (device state only changes at slice boundaries or through
             // guest writes, so this bounds latency, not correctness).
             if self.esperando {
-                if self.linha_irq((self.cpsr & 0x80) == 0) {
+                if self.linha_irq(pode_irq) {
                     self.esperando = false;
                     // Wake on a pending edge: deliver NOW if unmasked,
                     // before the guest reprograms MATCH and hides it
@@ -2301,7 +2594,7 @@ impl CpuBackend for Interpretador {
                             eprintln!("WAKE#{n} ins={} pc={:#x} I={} mode={:#x}", self.instrucoes, self.r[15], (self.cpsr >> 7) & 1, self.cpsr & 0x1F);
                         }
                     }
-                    if self.cpsr & 0x80 == 0 {
+                    if pode_irq {
                         self.r[15] = self.r[15].wrapping_sub(4);
                         self.entra_irq();
                     }
@@ -2315,38 +2608,49 @@ impl CpuBackend for Interpretador {
             // (cpsie / exception return / msr clearing I). Serve a
             // pending line NOW, unmissable — the 64-poll below strides
             // over the idle loop's brief unmasked windows forever.
-            // (Backstop poll stays.)
+            // (Backstop poll stays.) Deferred while !pode_irq (see gate
+            // above); the flag is NOT consumed so nothing is lost.
             if self.irq_pendente {
-                self.irq_pendente = false;
-                // TEMP (check audit, f >= 100000, cap 10): log I-bit +
-                // gate verdict at every unmask-check. Distinguishes
-                // latch-shut (I=0, false) from re-masked-before-check
-                // (I=1, which should be impossible).
-                static mut NCHK: u32 = 0;
-                unsafe {
-                    if self.instrucoes > 200_000_000 && NCHK < 10 {
-                        NCHK += 1;
-                        let n = NCHK;
-                        let res = self.linha_irq(true);
-                        eprintln!("CHK#{n} ins={} I={} res={res}", self.instrucoes, (self.cpsr >> 7) & 1);
-                        if res && self.cpsr & 0x80 == 0 {
+                if pode_irq {
+                    self.irq_pendente = false;
+                    // TEMP (check audit, f >= 100000, cap 10): log I-bit +
+                    // gate verdict at every unmask-check. Distinguishes
+                    // latch-shut (I=0, false) from re-masked-before-check
+                    // (I=1, which should be impossible).
+                    static mut NCHK: u32 = 0;
+                    unsafe {
+                        if self.instrucoes > 200_000_000 && NCHK < 10 {
+                            NCHK += 1;
+                            let n = NCHK;
+                            let res = self.linha_irq(true);
+                            eprintln!("CHK#{n} ins={} I={} res={res}", self.instrucoes, (self.cpsr >> 7) & 1);
+                            if res && self.cpsr & 0x80 == 0 {
+                                self.entra_irq();
+                            }
+                        } else if self.cpsr & 0x80 == 0 && self.linha_irq(true) {
                             self.entra_irq();
                         }
-                    } else if self.cpsr & 0x80 == 0 && self.linha_irq(true) {
-                        self.entra_irq();
                     }
+                } else {
+                    // Deferred (masked or IRQ/FIQ/ABT/UND mode): poll
+                    // without consuming so level tracking stays fresh.
+                    let _ = self.linha_irq(false);
                 }
             }
             // Dirty timer state: a birth (MMIO write or per-slice
-            // catch-up) happened since the last unmasked check.
+            // catch-up) happened since the last deliverable check.
             // Persists across masked stretches (unlike the flag above,
             // which the first low check consumes), so an edge born
             // while masked is served at the next unmask instead of
-            // being sampled away. Consumed only by an unmasked check.
-            if self.cpsr & 0x80 == 0 && self.timer_sujo {
-                self.timer_sujo = false;
-                if self.linha_irq(true) {
-                    self.entra_irq();
+            // being sampled away. Consumed only by a deliverable check.
+            if self.timer_sujo {
+                if pode_irq {
+                    self.timer_sujo = false;
+                    if self.linha_irq(true) {
+                        self.entra_irq();
+                    }
+                } else {
+                    let _ = self.linha_irq(false);
                 }
             }
             // TEMP (tick timeline): logs masked<->free transitions
@@ -2382,8 +2686,16 @@ impl CpuBackend for Interpretador {
                 }
             if self.cpsr & 0x80 == 0 {
                 self.sondagem_irq = self.sondagem_irq.wrapping_add(1);
-                if self.sondagem_irq & 63 == 0 && self.linha_irq(true) {
-                    self.entra_irq();
+                if self.sondagem_irq & 63 == 0 {
+                    if pode_irq {
+                        if self.linha_irq(true) {
+                            self.entra_irq();
+                        }
+                    } else {
+                        // Deferred (IRQ/FIQ/ABT/UND mode): poll without
+                        // consuming so level tracking stays fresh.
+                        let _ = self.linha_irq(false);
+                    }
                 }
             }
             // Observational trap: report (r0, r1) at the trapped PC, then run
@@ -2498,6 +2810,11 @@ impl CpuBackend for Interpretador {
         self.mem
             .map_zeroed(name, base, len)
             .map_err(|e| CpuError(e.to_string()))
+    }
+
+    fn desmapeia_intervalo(&mut self, base: u32, len: usize) -> Result<(), CpuError> {
+        self.mem.desmapeia_intervalo(base, len);
+        Ok(())
     }
 }
 
@@ -2678,6 +2995,47 @@ mod tests {
     }
 
     #[test]
+    fn aborto_dado_grava_far_e_vai_ao_vetor() {
+        // entra_aborto(0x1FCE0, 0x5, false) with r15 AT the fault
+        // (faulting accesses don't advance it, unlike IRQ delivery):
+        // mode ABT, I+A masked, FAR/DFSR recorded, lr=fault+8,
+        // pc=0x10 (low vectors: SCTLR bit13 clear on reset).
+        let mut cpu = cpu_with(&arm(&[0xeaff_fffe]));
+        cpu.write_reg(Reg::Pc, 0x1000);
+        cpu.entra_aborto(0x1fce0, 0x5, false);
+        assert_eq!(cpu.cpsr() & 0x1F, 0x17);
+        assert_ne!(cpu.cpsr() & 0x80, 0);
+        assert_ne!(cpu.cpsr() & 0x100, 0);
+        assert_eq!(cpu.read_reg(Reg::Pc), 0x10);
+        assert_eq!(cpu.read_reg(Reg::Lr), 0x1008);
+        assert_eq!(cpu.le_cp15(0x300), Some(0x1fce0));
+        assert_eq!(cpu.le_cp15(0x280), Some(0x5));
+        // Prefetch variant: lr = fault+4, IFSR key, 0x0C vector.
+        let mut cpu = cpu_with(&arm(&[0xeaff_fffe]));
+        cpu.write_reg(Reg::Pc, 0x80bc);
+        cpu.entra_aborto(0x80bc, 0x5, true);
+        assert_eq!(cpu.cpsr() & 0x1F, 0x17);
+        assert_eq!(cpu.read_reg(Reg::Pc), 0x0C);
+        assert_eq!(cpu.read_reg(Reg::Lr), 0x80c0);
+        assert_eq!(cpu.le_cp15(0x281), Some(0x5));
+    }
+
+    #[test]
+    fn ldc_p15_e_nop_outro_coprocessador_falha() {
+        // STC p15 (0xEC442F0E, the preload op in flush_pfn_alias on
+        // the /init exec path): accepted as NOP in the cacheless
+        // flat model. Same encoding to p10 must still fault (real
+        // VFP state would corrupt).
+        // 0x00: stc p15, cr2, [r4]; 0x04: b . (never runs: Budget).
+        let mut cpu = cpu_with(&arm(&[0xec44_2f0e, 0xeaff_fffe]));
+        cpu.write_reg(Reg::Lr, RETURN_MAGIC);
+        assert_eq!(cpu.run(0, 6).unwrap(), StopReason::Budget);
+        // 0x00: stc p10, cr2, [r4] (CP#=0xA): Exception.
+        let mut cpu = cpu_with(&arm(&[0xec44_2a0e]));
+        assert!(matches!(cpu.run(0, 6).unwrap(), StopReason::Exception { .. }));
+    }
+
+    #[test]
     fn wfi_queima_orcamento_sem_travar() {
         // mcr p15,0,r0,c7,c0,4 = 0xEE070F90. Without fonte: burns the
         // slice and returns Budget (never hangs the run).
@@ -2793,6 +3151,70 @@ mod tests {
         let mut cpu = cpu_with(&arm(&[0xe12f_ff1e]));
         cpu.write_reg(Reg::Lr, RETURN_MAGIC);
         assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
+    }
+
+    #[test]
+    fn push_thumb_falhado_restaura_sp() {
+        // Thumb push commits sp BEFORE storing: a fault on the 3rd
+        // word (stack growth into unmapped) must roll sp back, or
+        // the resume re-executes and double-decrements (live: -24
+        // drift broke init's canary check and popped the guard
+        // into pc). 12-byte stack window, sp 4 above it, 3-reg push
+        // (12 B): first two stores land, third faults.
+        let mut bytes = vec![0u8; 0x1000];
+        // 0x00: push {r0-r2} (0xB407); 0x02: b . (0xE7FE).
+        bytes[0x00..0x02].copy_from_slice(&0xB407u16.to_le_bytes());
+        bytes[0x02..0x04].copy_from_slice(&0xE7FEu16.to_le_bytes());
+        let mut mem = crate::cpu::mem::GuestMemory::new();
+        mem.map("code", 0, bytes, true).unwrap();
+        mem.map_zeroed("stack", 0x2000_0000, 8).unwrap();
+        let mut cpu = crate::cpu::interpretador::Interpretador::new().unwrap();
+        cpu.reset(&mem).unwrap();
+        cpu.write_reg(Reg::Sp, 0x2000_0008);
+        let parada = cpu.run(1, 10).unwrap();
+        assert!(matches!(parada, StopReason::MemoryFault { .. }), "{parada:?}");
+        assert_eq!(cpu.read_reg(Reg::Sp), 0x2000_0008);
+    }
+
+    #[test]
+    fn thumb_bl_par_nao_alinhado_acerta_alvo() {
+        // Old-Thumb BL with the pair at pc≡2 (mod 4): base is the
+        // unmasked pc+4. Pair at 0x02: first 0xF000 (imm10=0 → LR=6),
+        // second 0xF87D (imm11=0x7D → target 6+0xFA=0x100). The old
+        // `& !2` gave base 4, target 0xFE (proven live: init's bl at
+        // 0x8ECE landed 2 early on padding and faulted odd-pc).
+        let mut bytes = vec![0u8; 0x1000];
+        bytes[0x02..0x04].copy_from_slice(&0xF000u16.to_le_bytes());
+        bytes[0x04..0x06].copy_from_slice(&0xF87Du16.to_le_bytes());
+        let mut mem = crate::cpu::mem::GuestMemory::new();
+        mem.map("code", 0, bytes, true).unwrap();
+        mem.map_zeroed("data", 0x1000, 0x1000).unwrap();
+        mem.map_zeroed("stack", 0x2000_0000, 0x1000).unwrap();
+        let mut cpu = crate::cpu::interpretador::Interpretador::new().unwrap();
+        cpu.reset(&mem).unwrap();
+        cpu.write_reg(Reg::Sp, 0x2000_0f00);
+        let _ = cpu.run(3, 2);
+        assert_eq!(cpu.read_reg(Reg::Pc) & !1, 0x100);
+        assert!(cpu.read_reg(Reg::Pc) & 1 == 0);
+        assert_eq!(cpu.read_reg(Reg::Lr), 0x07);
+    }
+
+    #[test]
+    fn svc_usuario_vai_ao_vetor_convidado() {
+        // svc #0 (EABI syscall) in USR mode → entra_svc: mode SVC,
+        // I masked, lr=fault+4, pc=0x08 (low vectors: SCTLR bit13
+        // clear on reset), semihosting untouched.
+        let mut cpu = cpu_with(&arm(&[0xef00_0000, 0xeaff_fffe]));
+        // 0x08 lies inside cpu_with's zero-padded code region:
+        // plant a branch-shaped vector there (no extra mapping).
+        cpu.write_mem(0x08, &0xEA00_0000u32.to_le_bytes()).unwrap();
+        cpu.write_reg(Reg::Lr, RETURN_MAGIC);
+        assert_eq!(cpu.cpsr() & 0x1F, 0x10);
+        let _ = cpu.run(0, 1);
+        assert_eq!(cpu.cpsr() & 0x1F, 0x13);
+        assert_ne!(cpu.cpsr() & 0x80, 0);
+        assert_eq!(cpu.read_reg(Reg::Pc), 0x08);
+        assert_eq!(cpu.read_reg(Reg::Lr), 0x04);
     }
 
     #[test]

@@ -248,7 +248,7 @@ impl Interpretador {
             if antes_i != depois_i {
                 static mut NRET: u32 = 0;
                 unsafe {
-                    if self.instrucoes > 166_000_000 && NRET < 200 {
+                    if self.instrucoes >= 245_000_000 && NRET < 200 {
                         NRET += 1;
                         let n = NRET;
                         eprintln!("RETX#{n} ins={} alvo={alvo:#x} mode={mode:#x} I:{a}->{b}", self.instrucoes, mode = self.cpsr & 0x1F, a = antes_i != 0, b = depois_i != 0);
@@ -365,10 +365,12 @@ impl Interpretador {
         // execve path. A service child failing execve (empty
         // /system!) exits 127 normally; init itself exiting is the
         // panic. Clone/fork presence separates the two stories.
+        // Cap 40 (was 10): service execves/exits happen late
+        // (f≈1.1B) and need headroom past early init.
         if self.r[7] == 1 || self.r[7] == 248 || self.r[7] == 11 || self.r[7] == 2 || self.r[7] == 120 {
             static mut NEX: u32 = 0;
             unsafe {
-                if NEX < 10 {
+                if NEX < 40 {
                     NEX += 1;
                     let ti = self.r[13] & !0x1FFF;
                     let task = self.mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
@@ -387,13 +389,13 @@ impl Interpretador {
         }
         // TEMP (open-path watch): log path args for open/creat/
         // mknod/mkdir (r7=5/8/14/39) to see exactly which files
-        // init touches (does it open /dev/urandom? create it?
-        // where does the property/urandom path fail?). Cap 200.
+        // init/services touch (linker .so opens, /dev nodes).
+        // Cap 1500 (was 200): service startup runs past 1B insns.
         // Remove with EXITCAL once the killer is named.
         if matches!(self.r[7], 5 | 8 | 14 | 39) {
             static mut NOP: u32 = 0;
             unsafe {
-                if NOP < 200 {
+                if NOP < 1500 {
                     NOP += 1;
                     let p = self.r[0];
                     let nm = if (0x1000..0xC000_0000).contains(&p) {
@@ -1001,7 +1003,7 @@ impl Interpretador {
                 if mascara & 0x80 != 0 && self.cpsr & 0x80 == 0 {
                     static mut NCPSD: u32 = 0;
                     unsafe {
-                        if self.instrucoes > 183_000_000 && NCPSD < 2000 {
+                        if self.instrucoes >= 245_000_000 && NCPSD < 2000 {
                             NCPSD += 1;
                             let n = NCPSD;
                             eprintln!("CPSID#{n} ins={} pc={pc:#x} mode={mode:#x}", self.instrucoes, pc = pc, mode = self.cpsr & 0x1F);
@@ -1018,7 +1020,7 @@ impl Interpretador {
                 if limpava {
                     static mut NCPSE: u32 = 0;
                     unsafe {
-                        if self.instrucoes > 183_000_000 && NCPSE < 2000 {
+                        if self.instrucoes >= 245_000_000 && NCPSE < 2000 {
                             NCPSE += 1;
                             let n = NCPSE;
                             eprintln!("CPSIE#{n} ins={} pc={pc:#x} mode={mode:#x}", self.instrucoes, pc = pc, mode = self.cpsr & 0x1F);
@@ -1286,7 +1288,7 @@ impl Interpretador {
         if !para_spsr && self.cpsr & 0x80 != 0 && novo & 0x80 == 0 {
             static mut NMSRE: u32 = 0;
             unsafe {
-                if NMSRE < 200 {
+                if self.instrucoes >= 245_000_000 && NMSRE < 200 {
                     NMSRE += 1;
                     let n = NMSRE;
                     eprintln!("MSRIE#{n} ins={} pc={pc:#x} mode={mode:#x}", self.instrucoes, pc = pc, mode = self.cpsr & 0x1F);

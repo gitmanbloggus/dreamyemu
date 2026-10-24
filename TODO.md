@@ -664,13 +664,73 @@ Still open (2026-10-23 evening):
   because yaffs mounts fail on empty NAND (no yaffs content in
   image). Canary probe cluster retired (CHK skip, CENTRY,
   CCOPY, BSSWR/BSSRD, STKWR, VALWR).
-  NAND second wall (independent, after canary): yaffs
-  refuses all mounts (`NAND geometry problems: chunk size 2048,
-  type is yaffs2, inbandTags 0` = oobsize < 32 — kernel-phase
-  MTD reads hit zeroed stubs, no ID/partition/data path yet;
-  SPL-phase serve only covers the SPL's own loads). OPEN watch
-  confirms init reaches mknod /dev/mtd/mtd0.. but never a
-  working /system or /data.
+  DIAGNOSIS-13 (NAND bring-up, in flight): kernel-phase MTD
+  was stub-zeroed, so yaffs refused all mounts (geometry:
+  oobsize < 32). Decoded msm_nand_scan from the kernel binary:
+  READ-ID → geometry shifts → CFG program → mtd fields; the
+  ops table lives at scan+0x270 (erase 0xC015484C, read
+  0xC01547F8, write 0xC01535B4, read_oob 0xC0153F34,
+  write_oob 0xC0152F68, isbad 0xC0152DE4...), controller base
+  0xA0A00000, size match on device id 0xAAEC (Samsung K9K2G08
+  = SPL entry-8 chip). Wedges (same class as faked DMA
+  completions, TEMP until a real ADM model): ID bytes
+  EC AA 00 15 at [chip+28], r7 forced to 0xAAEC → GEO now
+  size=0x10000000, erasesize=0x20000, writesize=0x800,
+  oobsize=0x38, oobavail=0x10 (linux361) — yaffs proceeds to
+  real reads. Read serve (0xC0153F34 entry): image bytes by
+  absolute chip offset (entry-8 file map), forged success
+  (sp=[sp+120], pc=lr). Result: yaffs scans real tags
+  (NANDPART#1 start=0x2E4000, #3 start=0xB540000) but the
+  0xAA-filled image reads "not erased" → erase attempts hit
+  the stub DMOV path → error cascade → posix-timers BUG +
+  NULL-deref oops (linux361/364). Fix in flight (linux365):
+  serve erase (Vec fill 0xFF, forged return sp=[sp+64]) and
+  write (Vec apply, forged return sp=[sp+128], sanity-gated).
+  RESOLVED the forged-return offsets (linux366 post-mortem):
+  sp-restore read the saved-LR slot instead of saved-IP on two
+  of three forges (write: +128 vs correct +124; erase: +64 vs
+  correct +60 — push12 saves ip at S_old-16, sub sizes 92/28;
+  only read's +120 was right), so sp became a code address and
+  the run died at 0xC0154574 ldr [fp-76] with fp=0x40
+  (addr 0xFFFFFFF4). Frame layouts now documented at each forge.
+  NBH carries a raw yaffs2 system payload [0x3F1300,0x4272000)
+  DIAGNOSIS-14 (forged-return sp rule, hard lesson): a
+  trap_pc_mem hook fires BEFORE the trapped instruction, so for
+  a function entry the prologue has NOT run — the pushed frame
+  does not exist and sp is already the caller's correct sp.
+  Reading "saved sp" from [sp+off] grabs unrelated caller data
+  (ran green for thousands of forged NAND reads thanks to
+  fp-based caller epilogues, then died when a tick landed in
+  the window: __irq_svc entry with garbage sp → fault at
+  [r9]=0). Forged returns must NOT touch sp (pc=lr, r0=result
+  only). Same class as the Thumb-push bug: exact sp accounting
+  on every path.
+  DIAGNOSIS-15 (posix-timers BUG at 18.2s, in flight):
+  run_posix_cpu_timers BUG_ON(!irqs_disabled()) fires in a
+  nested GPT tick (handle_edge_irq → ... → update_process_times)
+  that preempts yaffs GC + printk during the 0xAA-image mounts.
+  Entry always masks (ENTRA-NOI=0); the clearer is guest-side
+  in the tick chain and only trips under NAND-window contention
+  (thousands of prior ticks pass — likely a lock slow path with
+  cpsie, e.g. console_sem via the "chunk was not erased" spam).
+  I-timeline re-gated to ins>=245M (linux371) to catch it
+  red-handed. If it evaporates on clean mounts (no GC spam),
+  it was contention-only. Scan starts so far: 0x2E40000 (1st),
+  0xB540000 (2nd), 0x71C0000 (3rd, 600k only) — mount order is
+  system/userdata/cache; slave survey names each partition's
+  size/offset to attribute them before planting.
+  RESOLVED (linux373-374): slave #1 = "SYSTEM" (index 3, size
+  0x4380000 = 69.9MB), slave #2 = "USERDATA" (index 5, size
+  0x4AC0000 = 75MB) — uppercase names (why no lowercase hit).
+  Scan starts ARE partition starts (userdata [0xB540000,
+  0x10000000) fills the chip exactly; system starts 0x2E40000,
+  cache 0x71C0000). Planted NBH system [0x3F1300, +31031 recs]
+  at system page 24320 → tests/spl/nand_sys.img (linux375 in
+  flight): expect /system/bin/sh → console.
+  NBH carries a raw yaffs2 system payload [0x3F1300,0x4272000)
+  (root header + /app verified, 2112 stride, real OOB tags) —
+  plantable page-linear once the system partition start is
+  named by NANDPART.
   MILESTONE (linux331): clean Budget stop with init RUNNING —
   `Freeing init memory`, `/initlogo.rle` missing (non-fatal),
   yaffs mounts on mtdblock3/5/4, then `init: Unable to open

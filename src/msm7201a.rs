@@ -3114,6 +3114,370 @@ pub static mut TTBR_TASK: u32 = 0;
     // check aborted boot until the Thumb-push rollback fix; it
     // passes genuinely now ([r0]==[r7]==guard, sp stable —
     // proven live linux356). Trap removed with the fix.
+    // TEMP (NAND scan observe + ID wedge): msm_nand_scan
+    // geometry path. T1 entry (0xC0153CA0): mtd + chip + the 4
+    // ID bytes the driver actually sees ([chip+28],[chip+32])
+    // — zeros mean the stub bus served nothing. WEDGE
+    // (0xC0153CC0, after the ID helper): plant Samsung K9K2G08
+    // bytes (EC AA 00 15) into [chip+28] so the geometry decode
+    // programs real values (2K page/128K block/64 spare); the
+    // controller itself is still stubbed, same class as the
+    // faked DMA completions. T2b (0xC0153D5C): force r7 (device
+    // id) to 0xAAEC so the 256MB size match hits (real READ-ID
+    // would return it; the stub DMA leaves garbage 0xEEEEEEEE).
+    // T3 moved to scan EXIT (0xC0153EBC): final mtd fields
+    // (size/erasesize/writesize/oobsize/oobavail at
+    // +8/+12/+16/+20/+24) + CFG shadow words + return value.
+    // T4 read_oob entry (0xC0153F34): mtd, from (r1/r2), ops +
+    // first 32 B; cap 200 so the mount scan's per-mtd min/max
+    // `from` reconstructs partition ranges. Remove once the
+    // read serve is built.
+    cpu.trap_pc_mem(0xC015_3CA0, move |mem, regs| {
+        static mut N1: u32 = 0;
+        unsafe {
+            if N1 < 4 {
+                N1 += 1;
+                let n = N1;
+                let mtd = regs[0];
+                let chip = mem.read_u32(mtd.wrapping_add(0xA8)).unwrap_or(0xDEAD);
+                let id0 = mem.read_u32(chip.wrapping_add(28)).unwrap_or(0xDEAD);
+                let id1 = mem.read_u32(chip.wrapping_add(32)).unwrap_or(0xDEAD);
+                eprintln!("NANDSCAN#{n} f={} mtd={mtd:#x} chip={chip:#x} id0={id0:#x} id1={id1:#x}", unsafe { FATIA_ATUAL });
+            }
+        }
+    });
+    cpu.trap_pc_mem(0xC015_3CC0, move |mem, regs| {
+        static mut NW: u32 = 0;
+        unsafe {
+            // WEDGE (uncapped, idempotent): plant K9K2G08 ID bytes
+            // so the decode + size match see real silicon. chip is
+            // callee-saved r6 here (set at scan entry, helper
+            // preserves it). EC AA = Samsung maker+device (matches
+            // the 0xAAEC whitelist entry = SPL entry-8 chip);
+            // 00 15 = extended-ID filler for the geometry shifts.
+            let chip = regs[6];
+            let _ = mem.write(chip.wrapping_add(28), &[0xEC, 0xAA, 0x00, 0x15]);
+            if NW < 4 {
+                NW += 1;
+                let n = NW;
+                eprintln!("NANDWEDGE#{n} f={} chip={chip:#x} idret={:#x}", unsafe { FATIA_ATUAL }, regs[0]);
+            }
+        }
+    });
+    cpu.trap_pc_mem(0xC015_3D5C, move |_mem, regs| {
+        // WEDGE: force the device id to the Samsung match so
+        // mtd->size = 256MB is stored (0xC0153E04 path). Fires
+        // right after `mov r7,r0` would have run — overwrite r7.
+        regs[7] = 0xAAEC;
+    });
+    cpu.trap_pc_mem(0xC015_3EBC, move |mem, regs| {
+        static mut N3: u32 = 0;
+        unsafe {
+            if N3 < 4 {
+                N3 += 1;
+                let n = N3;
+                let mtd = regs[5];
+                let mut f = [0u32; 5];
+                for (i, s) in f.iter_mut().enumerate() {
+                    *s = mem.read_u32(mtd.wrapping_add(8 + (i as u32) * 4)).unwrap_or(0xDEAD);
+                }
+                let cfg0 = mem.read_u32(0xC02B_80EC).unwrap_or(0xDEAD);
+                let cfg1 = mem.read_u32(0xC02B_80ECu32.wrapping_add(0x104)).unwrap_or(0xDEAD);
+                eprintln!("NANDGEO#{n} f={} ret={:#x} mtd={mtd:#x} fields={f:#x?} cfg={cfg0:#x}/{cfg1:#x}", unsafe { FATIA_ATUAL }, regs[0]);
+            }
+        }
+    });
+    // TEMP (NAND read serve): serve msm_nand_read_oob from the
+    // host NAND image and forge a success return, bypassing the
+    // stub controller + DMOV wait + ECC entirely (same wedge
+    // class as the faked DMA completions). Observed protocol:
+    // r2 = absolute chip byte offset (page stepping 0x20000 =
+    // per-eraseblock scan), ops = [sp] with mtd_oob_ops layout
+    // (mode@0, len@4, retlen@8, ooblen@12, oobretlen@16,
+    // ooboffs@20, datbuf@24, oobbuf@28 — datbuf NULL on the
+    // yaffs tag scans, oobbuf set). Entry-8 geometry: data byte
+    // (from+off) lives at image page*2112+(off&0x7FF); spare
+    // byte i of the chunk at file page*2112+2048+ooboffs+i.
+    // Forged return: sp = saved ip ([sp+120]), pc = lr, r0 = 0.
+    let nand_rd = nand.clone();
+    cpu.trap_pc_mem(0xC015_3F34, move |mem, regs| {
+        static mut N4: u32 = 0;
+        static mut LAST: u32 = 0xFFFF_FFFF;
+        static mut NP: u32 = 0;
+        unsafe {
+            let from = regs[2];
+            let last = LAST;
+            LAST = from;
+            // New scan (offset runs backward) = next partition's
+            // start. Cap 10: names every mounted partition's base
+            // without board knowledge.
+            if from < last {
+                if NP < 10 {
+                    NP += 1;
+                    let n = NP;
+                    eprintln!("NANDPART#{n} f={} start={from:#x}", unsafe { FATIA_ATUAL });
+                }
+            }
+            // NULL/unmapped ops guard: some callers may pass no ops
+            // (or a stale pointer); running the driver on that
+            // NULL-derefs inside read_oob and the nested abort
+            // cascade kills init's reader. Fail closed with -EINVAL
+            // and a forged return instead. Cap 5.
+            let ops_probe = mem.read_u32(regs[13]).unwrap_or(0);
+            if ops_probe == 0 || mem.read_u32(ops_probe).is_err() {
+                static mut NN: u32 = 0;
+                unsafe {
+                    if NN < 5 {
+                        NN += 1;
+                        let n = NN;
+                        eprintln!("NANDNULL#{n} f={} ops={ops_probe:#x}", unsafe { FATIA_ATUAL });
+                    }
+                }
+                regs[0] = 0xFFFF_FFEA; // -EINVAL
+                regs[15] = regs[14];
+                return;
+            }
+            // Detail only in the exec window (f>=500000 slices):
+            // early scans exhaust any cap; the service execves
+            // (f≈550k) and their file reads are what matters now.
+            // Log full ops words to validate the datbuf/len decode
+            // for DATA reads (tag scans were OOB-only).
+            if unsafe { FATIA_ATUAL } >= 500_000 && N4 < 200 {
+                N4 += 1;
+                let n = N4;
+                let ops0 = mem.read_u32(regs[13]).unwrap_or(0xDEAD);
+                let mut ow = [0u32; 8];
+                for (i, s) in ow.iter_mut().enumerate() {
+                    *s = mem.read_u32(ops0.wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
+                }
+                eprintln!("NANDRD#{n} f={} from={from:#x} ops={ops0:#x} ow={ow:#x?}", unsafe { FATIA_ATUAL });
+            }
+            let ops = mem.read_u32(regs[13]).unwrap_or(0);
+            if ops == 0 {
+                return;
+            }
+            let ow = |i: u32| mem.read_u32(ops.wrapping_add(i * 4)).unwrap_or(0);
+            let len = ow(1);
+            let ooblen = ow(3);
+            let ooboffs = ow(5);
+            let datbuf = ow(6);
+            let oobbuf = ow(7);
+            let img = nand_rd.borrow();
+            // Data (full-page content reads; tag scans pass NULL).
+            if datbuf != 0 && len != 0 && len <= 0x10000 {
+                let mut resto = len;
+                let mut pos = 0u32;
+                while resto > 0 {
+                    let chip = from.wrapping_add(pos);
+                    let pagina = (chip >> 11) as usize;
+                    let dentro = (chip & 0x7FF) as usize;
+                    let base = pagina.checked_mul(2112).and_then(|b| b.checked_add(dentro));
+                    let cabe = core::cmp::min(resto as usize, 2048 - dentro);
+                    match base {
+                        Some(b) if b + cabe <= img.len() => {
+                            if mem.write(datbuf.wrapping_add(pos), &img[b..b + cabe]).is_err() {
+                                break;
+                            }
+                        }
+                        _ => break,
+                    }
+                    resto -= cabe as u32;
+                    pos += cabe as u32;
+                }
+                let _ = mem.write(ops.wrapping_add(8), &(pos.to_le_bytes()));
+            }
+            // Spare (yaffs tags live here; single-chunk reads).
+            if oobbuf != 0 && ooblen != 0 && ooboffs <= 64 && ooblen <= 64 - ooboffs {
+                let pagina = (from >> 11) as usize;
+                let base = pagina * 2112 + 2048 + ooboffs as usize;
+                if base + ooblen as usize <= img.len() {
+                    let _ = mem.write(oobbuf, &img[base..base + ooblen as usize]);
+                    let _ = mem.write(ops.wrapping_add(16), &ooblen.to_le_bytes());
+                }
+            }
+            // Forge success: the trap fires BEFORE the prologue,
+            // so the pushed frame does not exist yet and sp is
+            // already the caller's correct sp — do NOT touch it.
+            // pc = lr, r0 = 0.
+            regs[0] = 0;
+            regs[15] = regs[14];
+        }
+    });
+    // TEMP (NAND erase/write serve): yaffs needs real erases
+    // (it garbage-collects the 0xAA-filled image: "chunk was not
+    // erased" then the stub-DMOV error cascade ends in the
+    // posix-timers BUG + NULL-deref oops). ERASE (0xC015484C,
+    // frame push12+sub28): fill the host image block range with
+    // 0xFF (data+spares, entry-8: file block = 135168 B) and
+    // forge success (sp=[sp+64], pc=lr, r0=0). WRITE
+    // (0xC0152F68, frame push12+sub92, same ops convention as
+    // read_oob): copy datbuf/oobbuf into the image, set retlens,
+    // forge success (sp=[sp+128]) — but ONLY when the ops
+    // decode is sane (datbuf set, len<=64K); otherwise pass
+    // through to the stubs and log (cap 12). Remove with the
+    // read serve once mounts are clean.
+    let nand_ew = nand.clone();
+    cpu.trap_pc_mem(0xC015_484C, move |mem, regs| {
+        static mut NE: u32 = 0;
+        unsafe {
+            let instr = regs[1];
+            let addr = mem.read_u32(instr.wrapping_add(4)).unwrap_or(0xDEAD);
+            let len = mem.read_u32(instr.wrapping_add(8)).unwrap_or(0xDEAD);
+            if NE < 12 {
+                NE += 1;
+                let n = NE;
+                eprintln!("NANDERASE#{n} f={} addr={addr:#x} len={len:#x}", unsafe { FATIA_ATUAL });
+            }
+            // Serve block-aligned erases; anything else passes to
+            // the stubs (logged above). Frame: push12 (ip saved at
+            // S_old-16) + sub sp,#28 → S=S_old-76, so saved sp is
+            // at [S+60].
+            if addr != 0xDEAD && len != 0 && addr & 0x1FFFF == 0 && len & 0x1FFFF == 0 {
+                let mut img = nand_ew.borrow_mut();
+                let b0 = (addr >> 17) as usize;
+                let nb = (len >> 17) as usize;
+                if (b0 + nb).checked_mul(135168).map_or(false, |e| e <= img.len()) {
+                    for b in b0..b0 + nb {
+                        let o = b * 135168;
+                        img[o..o + 135168].fill(0xFF);
+                    }
+                    // Forge: same no-sp-touch rule (trap runs before
+                    // the prologue; sp is already correct).
+                    regs[0] = 0;
+                    regs[15] = regs[14];
+                }
+            }
+        }
+    });
+    let nand_wr = nand.clone();
+    cpu.trap_pc_mem(0xC015_2F68, move |mem, regs| {
+        static mut NW2: u32 = 0;
+        unsafe {
+            let ops = mem.read_u32(regs[13]).unwrap_or(0);
+            let ow = |i: u32| mem.read_u32(ops.wrapping_add(i * 4)).unwrap_or(0);
+            let to = regs[2];
+            let len = ow(1);
+            let ooblen = ow(3);
+            let ooboffs = ow(5);
+            let datbuf = ow(6);
+            let oobbuf = ow(7);
+            // Sanity gate: forge only a clean single-chunk-style
+            // write (datbuf present, bounded lens); else the stubs
+            // run and the case gets logged.
+            let sane = ops != 0 && datbuf != 0 && len != 0 && len <= 0x10000
+                && ooboffs <= 64 && ooblen <= 64 - ooboffs;
+            if NW2 < 12 {
+                NW2 += 1;
+                let n = NW2;
+                eprintln!("NANDWR#{n} f={} to={to:#x} len={len:#x} datbuf={datbuf:#x} ooblen={ooblen:#x} oobbuf={oobbuf:#x} sane={sane}", unsafe { FATIA_ATUAL });
+            }
+            if sane {
+                // Data: guest bytes first (ends the mem borrow),
+                // then into the image.
+                let mut resto = len;
+                let mut pos = 0u32;
+                while resto > 0 {
+                    let chip = to.wrapping_add(pos);
+                    let pagina = (chip >> 11) as usize;
+                    let dentro = (chip & 0x7FF) as usize;
+                    let cabe = core::cmp::min(resto as usize, 2048 - dentro);
+                    let base = match pagina.checked_mul(2112).and_then(|b| b.checked_add(dentro)) {
+                        Some(b) => b,
+                        None => break,
+                    };
+                    let src = match mem.read(datbuf.wrapping_add(pos), cabe as u32) {
+                        Ok(s) => s.to_vec(),
+                        Err(_) => break,
+                    };
+                    {
+                        let mut img = nand_wr.borrow_mut();
+                        if base + cabe > img.len() {
+                            break;
+                        }
+                        img[base..base + cabe].copy_from_slice(&src);
+                    }
+                    resto -= cabe as u32;
+                    pos += cabe as u32;
+                }
+                let _ = mem.write(ops.wrapping_add(8), &pos.to_le_bytes());
+                if oobbuf != 0 && ooblen != 0 {
+                    let pagina = (to >> 11) as usize;
+                    let base = pagina * 2112 + 2048 + ooboffs as usize;
+                    if let Ok(ob) = mem.read(oobbuf, ooblen) {
+                        let mut img4 = nand_wr.borrow_mut();
+                        if base + ooblen as usize <= img4.len() {
+                            img4[base..base + ooblen as usize].copy_from_slice(&ob);
+                        }
+                    }
+                }
+                let _ = mem.write(ops.wrapping_add(8), &pos.to_le_bytes());
+                let _ = mem.write(ops.wrapping_add(16), &ooblen.to_le_bytes());
+                // Frame: push12 (ip saved at S_old-16) + sub sp,#92
+                // → S=S_old-140, so saved sp is at [S+124].
+                regs[0] = 0;
+                regs[15] = regs[14];
+            }
+        }
+    });
+    // TEMP (execve-return trap): the service children fork+execve
+    // then _exit(127) with zero .so/linker opens. Catch the execve
+    // RETURN at the wrapper caller (Thumb lr 0x96E7 → trap 0x96E6):
+    // fires IFF execve failed in-kernel; r0 = -errno names it
+    // (ENOENT = file invisible despite plant → mount/lookup;
+    // ENOEXEC/EACCES = header/perm/load). If it NEVER fires,
+    // execve succeeded and the 127 is userspace (linker/sh).
+    // Cap 10. Remove once the 127 is named.
+    cpu.trap_pc_mem(0x0000_96E6, move |mem, regs| {
+        static mut NX: u32 = 0;
+        unsafe {
+            if NX < 10 {
+                NX += 1;
+                let n = NX;
+                let ti = regs[13] & !0x1FFF;
+                let task = mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
+                eprintln!("EXECRET#{n} f={} r0={:#x} task={task:#x}", unsafe { FATIA_ATUAL }, regs[0]);
+            }
+        }
+    });
+    // TEMP (MTD slave survey): part_read_oob entry gives the
+    // partition slave mtd; dump layout words + name to recover
+    // the trout partition table (sizes/offsets) exactly — the
+    // 0x2E40000/0xB540000/0x71C0000 scan starts need attribution
+    // before planting the NBH system image. Dedup by slave ptr
+    // (6 partitions), cap 6. Remove once planted+verified.
+    cpu.trap_pc_mem(0xC014_FA34, move |mem, regs| {
+        static mut NSV: u32 = 0;
+        static mut VISTOS: [u32; 6] = [0; 6];
+        unsafe {
+            let slave = regs[0];
+            let mut seen = false;
+            let mut k = 0;
+            while k < 6 {
+                if VISTOS[k] == slave {
+                    seen = true;
+                    break;
+                }
+                k += 1;
+            }
+            if !seen && NSV < 6 {
+                VISTOS[NSV as usize] = slave;
+                NSV += 1;
+                let n = NSV;
+                let mut w = [0u32; 14];
+                for (i, s) in w.iter_mut().enumerate() {
+                    *s = mem.read_u32(slave.wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
+                }
+                // Field map (from master GEO + slave pairs): +0x00
+                // type, +0x04 flags, +0x08 size, +0x0C erasesize,
+                // +0x10 writesize, +0x14 oobsize, +0x18 oobavail,
+                // +0x1C name*, +0x20 part index, +0x24 master*,
+                // +0x28/+0x2C offset (u64?). Name via +0x1C.
+                let nm = w[7];
+                let ns = mem.read(nm, 16).map(|s| s.to_vec()).unwrap_or_default();
+                eprintln!("MTDSLAVE#{n} f={} slave={slave:#x} w={w:#x?} nameptr={nm:#x} name={ns:02x?}", unsafe { FATIA_ATUAL });
+            }
+        }
+    });
     // TEMP (flush runaway 0xC0046C50): release_console_sem's inner
     // scan increments r5 per byte looking for '\n'; the r5==r7
     // termination check sits outside the inner loop. If r5 runs past
@@ -4312,7 +4676,17 @@ pub static mut TTBR_TASK: u32 = 0;
                                 // the idle wall holds I=1 for 100k+
                                 // slices; a critical section never
                                 // survives 30 boundaries.
-                                if NMASK >= 30 {
+                                // SUSPENDED 2026-10-24 (linux376): the
+                                // posix-timers BUG at 18.2s fires in a
+                                // nested tick with I=0 — prime suspect
+                                // is THIS unmask landing mid-tick-chain
+                                // at a slice boundary (NMASK tripped by
+                                // NAND-window masking; NKU cap hides
+                                // later firings). Ticks are already
+                                // forced periodic (ATAG nohz=off +
+                                // MATCH plant + handler pin); test
+                                // whether the unmask is vestigial.
+                                if false && NMASK >= 30 {
                                     cpu.set_cpsr(cpsr_antes & !0x80);
                                     NMASK = 0;
                                     static mut NKU: u32 = 0;

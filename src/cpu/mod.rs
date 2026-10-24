@@ -51,6 +51,21 @@ pub enum StopReason {
     Budget,
 }
 
+impl StopReason {
+    /// One-line English reason for trace logs: what stopped the run.
+    /// (The `parada` string keeps the Debug format for the discovery
+    /// test; this is the human-readable companion.)
+    pub fn motivo(&self) -> &'static str {
+        match self {
+            StopReason::Budget => "all slices executed (instruction budget exhausted)",
+            StopReason::MemoryFault { .. } => "memory fault (unmapped access)",
+            StopReason::Exception { .. } => "CPU exception (illegal instruction or unhandled fault)",
+            StopReason::Returned => "guest returned to the entry sentinel",
+            StopReason::ApiCall { .. } => "guest reached the API-call sentinel",
+        }
+    }
+}
+
 pub trait CpuBackend {
     /// Prepares the core to execute with this memory map.
     fn reset(&mut self, mem: &GuestMemory) -> Result<(), CpuError>;

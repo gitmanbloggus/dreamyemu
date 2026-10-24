@@ -1174,13 +1174,14 @@ fn imprime_trace(
     cpu: &crate::cpu::interpretador::Interpretador,
     pc_falta: u32,
     addr_falta: Option<u32>,
+    motivo: &str,
 ) {
     use crate::cpu::desarma::desarma;
     use crate::cpu::CpuBackend;
     if let Some(a) = addr_falta {
-        eprintln!("TRACE stop pc={pc_falta:#x} addr={a:#x}");
+        eprintln!("TRACE stop [{motivo}] pc={pc_falta:#x} addr={a:#x}");
     } else {
-        eprintln!("TRACE stop pc={pc_falta:#x}");
+        eprintln!("TRACE stop [{motivo}] pc={pc_falta:#x}");
     }
     // Disassembly window: 8 instructions back, the faulting one marked,
     // 8 forward. Unmapped words print as .word via desarma's fallback
@@ -3208,10 +3209,11 @@ pub static mut TTBR_TASK: u32 = 0;
             let from = regs[2];
             let last = LAST;
             LAST = from;
-            // New scan (offset runs backward) = next partition's
-            // start. Cap 10: names every mounted partition's base
-            // without board knowledge.
-            if from < last {
+            // Rewind bigger than a block = new scan (partition
+            // start or rescan). Small backward steps are yaffs
+            // checkpoint reads (page-stepped); logging those burns
+            // the cap instantly (seen live at 0x6C1D000+).
+            if from + 0x10000 < last {
                 if NP < 10 {
                     NP += 1;
                     let n = NP;
@@ -3237,12 +3239,12 @@ pub static mut TTBR_TASK: u32 = 0;
                 regs[15] = regs[14];
                 return;
             }
-            // Detail only in the exec window (f>=500000 slices):
-            // early scans exhaust any cap; the service execves
-            // (f≈550k) and their file reads are what matters now.
-            // Log full ops words to validate the datbuf/len decode
-            // for DATA reads (tag scans were OOB-only).
-            if unsafe { FATIA_ATUAL } >= 500_000 && N4 < 200 {
+            // Detail only for SYSTEM-partition reads in the exec
+            // window (f>=549000 slices): the service execves fail
+            // with -1 around f=551361; their file reads (header,
+            // phdrs, interp) are the evidence. Datapath scans would
+            // exhaust any cap instantly, hence both gates.
+            if unsafe { FATIA_ATUAL } >= 549_000 && from >= 0x2E40_0000 && from < 0x7200_0000 && N4 < 200 {
                 N4 += 1;
                 let n = N4;
                 let ops0 = mem.read_u32(regs[13]).unwrap_or(0xDEAD);
@@ -3435,7 +3437,7 @@ pub static mut TTBR_TASK: u32 = 0;
                 let n = NX;
                 let ti = regs[13] & !0x1FFF;
                 let task = mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
-                eprintln!("EXECRET#{n} f={} r0={:#x} task={task:#x}", unsafe { FATIA_ATUAL }, regs[0]);
+                eprintln!("EXECRET#{n} f={} r0={:#x} r7={:#x} r1={:#x} r2={:#x} lr={:#x} task={task:#x}", unsafe { FATIA_ATUAL }, regs[0], regs[7], regs[1], regs[2], regs[14]);
             }
         }
     });
@@ -5475,16 +5477,16 @@ pub static mut TTBR_TASK: u32 = 0;
     // stop — Budget included, since stall runs end on Budget with no
     // fault and the parked pc + stack + pc history names the stall.
     match &parada {
-        StopReason::MemoryFault { addr, pc } => imprime_trace(&cpu, *pc, Some(*addr)),
-        StopReason::Exception { pc } => imprime_trace(&cpu, *pc, None),
+        StopReason::MemoryFault { addr, pc } => imprime_trace(&cpu, *pc, Some(*addr), parada.motivo()),
+        StopReason::Exception { pc } => imprime_trace(&cpu, *pc, None, parada.motivo()),
         StopReason::Budget => {
-            imprime_trace(&cpu, cpu.read_reg(crate::cpu::Reg::Pc), None)
+            imprime_trace(&cpu, cpu.read_reg(crate::cpu::Reg::Pc), None, parada.motivo())
         }
         StopReason::ApiCall { addr } => {
-            imprime_trace(&cpu, cpu.read_reg(crate::cpu::Reg::Pc), Some(*addr))
+            imprime_trace(&cpu, cpu.read_reg(crate::cpu::Reg::Pc), Some(*addr), parada.motivo())
         }
         StopReason::Returned => {
-            imprime_trace(&cpu, cpu.read_reg(crate::cpu::Reg::Pc), None)
+            imprime_trace(&cpu, cpu.read_reg(crate::cpu::Reg::Pc), None, parada.motivo())
         }
     }
     // Final drain: a fault (or any non-Budget stop) lands mid-slice,
@@ -5800,7 +5802,7 @@ mod tests {
         cpu.write_reg(Reg::R2, 0x2000);
         // Must not panic; output eyeballed with --nocapture. The 0x2000
         // store target is unmapped on purpose (fault addr demo).
-        imprime_trace(&cpu, 0x1004, Some(0x2000));
+        imprime_trace(&cpu, 0x1004, Some(0x2000), "memory fault (unmapped access)");
     }
 
     /// Live-run frontier: reset vector through the reset function.

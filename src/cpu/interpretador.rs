@@ -3023,6 +3023,50 @@ mod tests {
     }
 
     #[test]
+    fn bl_reverso_longo_desvia() {
+        // init's 0xAFFC list walk starts with a backward `bl 0xABD4`
+        // (first half 0xF7FF at 0xB002, S=1 negative offset); the
+        // live 0xB012 fault analysis hinged on whether this bl is
+        // taken (its fallthrough would silently skip the callee).
+        // Exact init bytes: the bl must leave to 0xABD4 (fetch
+        // fault there), with lr set to the 0xB006 return (bit0 set)
+        // and r3/r2 holding just the literal loads.
+        let mut mem = GuestMemory::new();
+        let code: Vec<u8> = vec![
+            0x0A, 0x4B, // 0xAFFE: ldr r3, [pc, #40]
+            0x0A, 0x4A, // 0xB000: ldr r2, [pc, #40]
+            0xFF, 0xF7, 0xE7, 0xFD, // 0xB002: bl 0xABD4 (backward)
+            0x7B, 0x44, // 0xB004: add r3, pc (never runs: bl left)
+        ];
+        // One region [0xA000,0xB200): sequence tail at 0xAFFE,
+        // literal pool at 0xB028/0xB02C, and a marker at the bl
+        // target 0xABD4 (`movs r0,#0x42; b .`). Taken bl ⟺ r0==0x42
+        // (fallthrough instead reaches the 0xB004 adds and faults on
+        // the unmapped literal base). Zeros elsewhere NOP-sled, so
+        // Budget is the only other outcome.
+        let mut pag = vec![0u8; 0xFFE];
+        pag.extend_from_slice(&code);
+        pag.resize(0x1200, 0);
+        pag[0xBD4] = 0x42;
+        pag[0xBD4 + 1] = 0x20;
+        pag[0xBD4 + 2] = 0xFE;
+        pag[0xBD4 + 3] = 0xE7;
+        mem.map("code", 0xA000, pag, true).unwrap();
+        mem.write(0xB028, &0x14484u32.to_le_bytes()).unwrap();
+        mem.write(0xB02C, &0x6F4u32.to_le_bytes()).unwrap();
+        let mut cpu = Interpretador::new().unwrap();
+        cpu.reset(&mem).unwrap();
+        cpu.write_reg(Reg::Sp, 0x2000_0f00);
+        let parada = cpu.run(0xAFFF, 20).unwrap();
+        // The backward bl must reach the 0xABD4 marker (r0==0x42);
+        // the adds must not have run (r3 still the literal).
+        assert_eq!(cpu.read_reg(Reg::R0), 0x42, "bl did not branch? {parada:?}");
+        assert_eq!(cpu.read_reg(Reg::Lr), 0xB007);
+        assert_eq!(cpu.read_reg(Reg::R3), 0x14484);
+        assert_eq!(cpu.read_reg(Reg::R2), 0x6F4);
+    }
+
+    #[test]
     fn ldc_p15_e_nop_outro_coprocessador_falha() {
         // STC p15 (0xEC442F0E, the preload op in flush_pfn_alias on
         // the /init exec path): accepted as NOP in the cacheless

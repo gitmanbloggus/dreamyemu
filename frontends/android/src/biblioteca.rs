@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use zeebx::ui::library::Game;
+use dreamyemu::ui::library::Game;
 
 use crate::tema::ALVO;
 use crate::{Emulador, Onde, sistema, textura_de};
@@ -183,7 +183,7 @@ impl Emulador {
         egui::TopBottomPanel::top("barra").show(ctx, |ui| {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.heading("Zeebx");
+                ui.heading("Dreamyemu");
                 ui.add_space(10.0);
 
                 let total = self.jogos.len();
@@ -290,7 +290,7 @@ impl Emulador {
                     }
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
-                        "O Zeebx só enxerga a própria pasta.",
+                        "O Dreamyemu só enxerga a própria pasta.",
                     );
                 });
             }

@@ -50,7 +50,7 @@ pub fn abre_endereco(app: &AndroidApp, endereco: &str) {
 /// Dispara uma `Intent` com uma ação e, quando há, um endereço.
 ///
 /// Sem endereço, a tela de Ajustes recebe `package:<nosso nome>`, que é o que a faz abrir já
-/// no Zeebx em vez da lista de todos os aplicativos.
+/// no Dreamyemu em vez da lista de todos os aplicativos.
 fn abre_intencao(
     app: &AndroidApp,
     acao: &str,

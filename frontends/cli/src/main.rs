@@ -1,21 +1,21 @@
-//! Zeebx — a linha de comando do emulador de Zeebo / Qualcomm BREW.
+//! Dreamyemu — a linha de comando do emulador de Zeebo / Qualcomm BREW.
 //!
 //! Rodar, medir e inspecionar um jogo sem a interface: `run`, `sessao`, `bench`, `info`,
-//! `controles` e `wiimote`. A interface é o `zeebx-qt`, em `frontends/qt-standalone`.
+//! `controles` e `wiimote`. A interface é o `dreamyemu-qt`, em `frontends/qt-standalone`.
 
 // O binário consome o motor como biblioteca: nada aqui redeclara módulos, e `desktop` decide
 // quais deles entram na compilação.
-use zeebx::{audio, cpu, input, library, loader, machine, session, ui};
+use dreamyemu::{audio, cpu, input, library, loader, machine, session, ui};
 
 use std::process::ExitCode;
 
-use zeebx::brew::aee;
-use zeebx::cpu::{BackendPadrao, CpuBackend, dynarmic::DynarmicCpu};
-use zeebx::input::bindings;
-use zeebx::loader::archive;
-use zeebx::loader::modfile::{ModImage, Variant};
-use zeebx::machine::{AppletResult, Machine, Outcome};
-use zeebx::ui::window;
+use dreamyemu::brew::aee;
+use dreamyemu::cpu::{BackendPadrao, CpuBackend, dynarmic::DynarmicCpu};
+use dreamyemu::input::bindings;
+use dreamyemu::loader::archive;
+use dreamyemu::loader::modfile::{ModImage, Variant};
+use dreamyemu::machine::{AppletResult, Machine, Outcome};
+use dreamyemu::ui::window;
 
 /// Teto de instruções por fatia entre duas chamadas de API — evita que um laço infinito no
 /// guest trave o emulador. Precisa ser generoso: a inicialização do Bejeweled Twist passa
@@ -42,11 +42,11 @@ const PROFILE_LINES: usize = 20;
 const SEMIHOSTING_LINES: usize = 40;
 
 fn main() -> ExitCode {
-    // **O nível do registro entra aqui também.** A janela o lê ao abrir (o `zeebx-qt`), e os comandos
-    // de linha de comando não o liam: `ZEEBX_LOG=informacao` era ignorado em `run`, `bench` e
+    // **O nível do registro entra aqui também.** A janela o lê ao abrir (o `dreamyemu-qt`), e os comandos
+    // de linha de comando não o liam: `DREAMYEMU_LOG=informacao` era ignorado em `run`, `bench` e
     // `sessao`, e as linhas de instrumento -- todas de `Informacao` -- não apareciam. Foi assim que
     // duas medidas minhas saíram vazias antes de eu perceber.
-    zeebx::registro::le_do_ambiente();
+    dreamyemu::registro::le_do_ambiente();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("info") if args.len() == 2 => report(info(&args[1])),
@@ -175,7 +175,7 @@ fn main() -> ExitCode {
                                 return ExitCode::FAILURE;
                             }
                         },
-                        None => zeebx::PORTAS_PADRAO,
+                        None => dreamyemu::PORTAS_PADRAO,
                     },
                 },
             ))
@@ -490,9 +490,9 @@ fn main() -> ExitCode {
             ))
         }
         _ => {
-            eprintln!("uso: zeebx info <arquivo.mod>     (a interface é o zeebx-qt)");
+            eprintln!("uso: dreamyemu info <arquivo.mod>     (a interface é o dreamyemu-qt)");
             eprintln!(
-                "     zeebx run <arquivo.mod> [--window] [--seconds=N] [--keys=ms:tecla,...]
+                "     dreamyemu run <arquivo.mod> [--window] [--seconds=N] [--keys=ms:tecla,...]
                              [--dump-gl=DIR] [--dump-audio=ARQUIVO.wav]
                              [--trace[=trecho]] [--serial=CAMINHO] [--dump-heap]
                              [--dump-surfaces=DIR]
@@ -501,11 +501,11 @@ fn main() -> ExitCode {
                              [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
             );
             eprintln!(
-                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
+                "     dreamyemu sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
                              [--portas=controle,controle] [--dpad-nos-eixos]  (a sessão da janela, sem janela)"
             );
             eprintln!(
-                "     zeebx bench <arquivo.mod|zip> [--seconds=N] [--keys=ms:tecla,...] [--dump=QUADRO.bmp] [--teclas=ms:nome,...] [--instalados=0xCLSID[:id],...] [--dump-surfaces=DIR] [--dpad-nos-eixos]  (Dynarmic, sem janela)"
+                "     dreamyemu bench <arquivo.mod|zip> [--seconds=N] [--keys=ms:tecla,...] [--dump=QUADRO.bmp] [--teclas=ms:nome,...] [--instalados=0xCLSID[:id],...] [--dump-surfaces=DIR] [--dpad-nos-eixos]  (Dynarmic, sem janela)"
             );
             ExitCode::FAILURE
         }
@@ -664,7 +664,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         _ => path,
     };
     let image = ModImage::parse(std::fs::read(path)?)?;
-    let extensoes = zeebx::session::extensoes_de(std::path::Path::new(path));
+    let extensoes = dreamyemu::session::extensoes_de(std::path::Path::new(path));
     for extensao in &extensoes {
         println!(
             "extensão:  fornece {}",
@@ -1078,7 +1078,7 @@ fn bench_dynarmic(
         _ => std::path::Path::new(path),
     };
     let image = ModImage::parse(std::fs::read(path)?)?;
-    let extensoes = zeebx::session::extensoes_de(path);
+    let extensoes = dreamyemu::session::extensoes_de(path);
     let module = loader::load_with(&image, &extensoes)?;
     let root = path
         .parent()
@@ -1116,7 +1116,7 @@ fn bench_dynarmic(
     };
     let mut fotos: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
     let mut numero_da_foto = 0;
-    // Ver o comentário do mesmo interruptor no laço: é o `zeebx_dpad_to_analog_p1` do núcleo.
+    // Ver o comentário do mesmo interruptor no laço: é o `dreamyemu_dpad_to_analog_p1` do núcleo.
     let dpad_nos_eixos = std::env::args().any(|arg| arg == "--dpad-nos-eixos");
     while machine.clock_ms() < until && !machine.is_idle() {
         while pendentes
@@ -1196,9 +1196,9 @@ fn bench_dynarmic(
     // decodificada, o fluxo que o jogo para de alimentar, e quem calou cada som. Sem elas, medir
     // isso exigia abrir o RetroArch, e com ele a navegação de alguém.
     //
-    // O nível entra por `ZEEBX_LOG` (`aviso` é o padrão): as linhas de instrumento são
+    // O nível entra por `DREAMYEMU_LOG` (`aviso` é o padrão): as linhas de instrumento são
     // `informacao`, e sem a variável elas não aparecem.
-    let registro = zeebx::registro::drena();
+    let registro = dreamyemu::registro::drena();
     if !registro.is_empty() {
         println!("registro:");
         for linha in registro {
@@ -1207,7 +1207,7 @@ fn bench_dynarmic(
     }
     // **Dizer o que se perdeu.** Um instrumento que descarta linhas em silêncio mente por omissão:
     // foi assim que uma medição relatou "zero sons decodificados" com 123 sons pedidos no registro.
-    let descartes = zeebx::registro::descartes();
+    let descartes = dreamyemu::registro::descartes();
     if descartes > 0 {
         println!("registro:  {descartes} linha(s) foram descartadas pelo anel antes de serem lidas");
     }
@@ -1290,7 +1290,7 @@ fn sessao_sem_janela(
     let portas = match (portas_pedidas, &boomerang) {
         (Some(portas), _) => portas,
         (None, Some(_)) => [Some(bindings::Aparelho::Boomerang), None],
-        (None, None) => zeebx::PORTAS_PADRAO,
+        (None, None) => dreamyemu::PORTAS_PADRAO,
     };
     let mut session = session::Session::start_with(
         std::path::Path::new(path),
@@ -1443,7 +1443,7 @@ fn sessao_sem_janela(
             let deslocamento = session.clock_ms();
             session = session::Session::start_with(
                 std::path::Path::new(path),
-                zeebx::PORTAS_PADRAO,
+                dreamyemu::PORTAS_PADRAO,
                 serial,
                 placa,
                 None,
@@ -1523,7 +1523,7 @@ fn sessao_sem_janela(
     // quê* -- o som entregue e a duração decodificada, o fluxo que o jogo para de alimentar, e quem
     // calou cada som. Separá-los foi o que me fez perseguir uma voz cortada sem saber se ela tinha
     // sido cortada.
-    let registro = zeebx::registro::drena();
+    let registro = dreamyemu::registro::drena();
     if !registro.is_empty() {
         println!("registro:");
         for linha in registro {
@@ -1532,7 +1532,7 @@ fn sessao_sem_janela(
     }
     // **Dizer o que se perdeu.** Um instrumento que descarta linhas em silêncio mente por omissão:
     // foi assim que uma medição relatou "zero sons decodificados" com 123 sons pedidos no registro.
-    let descartes = zeebx::registro::descartes();
+    let descartes = dreamyemu::registro::descartes();
     if descartes > 0 {
         println!("registro:  {descartes} linha(s) foram descartadas pelo anel antes de serem lidas");
     }
@@ -1704,7 +1704,7 @@ fn run_frames(
     };
     let mut window = match show {
         true => Some(window::Window::open(
-            "Zeebx",
+            "Dreamyemu",
             machine.screen().width(),
             machine.screen().height(),
         )?),

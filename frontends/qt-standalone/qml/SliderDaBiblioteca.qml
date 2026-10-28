@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-import zeebx
+import dreamyemu
 
 // A biblioteca no jeito da Z-Wheel: o rolo de logos girando como cilindro, o nome, as caixas
 // deslizando, e a classificação com a descrição embaixo. As medidas e as curvas vêm do slider da

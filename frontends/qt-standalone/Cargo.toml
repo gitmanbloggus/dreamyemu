@@ -1,23 +1,23 @@
 [package]
-name = "zeebx-standalone-qt"
+name = "dreamyemu-standalone-qt"
 version = "0.4.2"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "O emulador definitivo de Zeebo!"
-authors = ["ZeebxTeam"]
-repository = "https://github.com/ZeebxTeam/zeebx-emu"
+description = "HTC Dream (T-Mobile G1) emulator"
+authors = ["Dreamyemu"]
+repository = "https://github.com/gitmanbloggus/dreamyemu"
 publish = false
 
-# **O binário é o `zeebx-qt`, e não o `zeebx`.** O `zeebx` é a linha de comando
+# **O binário é o `dreamyemu-qt`, e não o `dreamyemu`.** O `dreamyemu` é a linha de comando
 # (`frontends/cli`), e os dois saem no mesmo `target/release`. O nome também é o de quem já tem a
 # interface instalada: atalho, `.desktop` e atualizador apontam para ele.
 [[bin]]
-name = "zeebx-qt"
+name = "dreamyemu-qt"
 path = "src/main.rs"
 
 [dependencies]
 # O núcleo com a feature `desktop`: o áudio, a entrada e a sessão de jogo que o Qt reusa.
-zeebx = { path = "../..", features = ["atualizador"] }
+dreamyemu = { path = "../..", features = ["atualizador"] }
 # A ponte com o Qt: docs/implementacao/21-migracao-para-qt.md.
 cxx = "1"
 cxx-qt = "0.10"
@@ -31,24 +31,24 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "a
 
 # Os instaladores do Qt, gerados pelo `cargo packager --release` rodado neste diretório: `.deb` e
 # AppImage no Linux, NSIS no Windows, `.dmg` no macOS. Nome, identificador e binário próprios, para
-# o Zeebx Qt instalar ao lado do Zeebx do egui sem um sobrescrever o outro. Os caminhos de ícone
+# o Dreamyemu Qt instalar ao lado do Dreamyemu do egui sem um sobrescrever o outro. Os caminhos de ícone
 # sobem dois níveis porque o `assets/` continua na raiz do repositório.
 #
 # **O `cargo packager` não implanta o Qt**: cada sistema tem o passo dele no `release.yml` — o
 # `linuxdeploy-plugin-qt` no AppImage, o `windeployqt` no Windows, o `macdeployqt` no macOS — e o
 # `.deb` usa o Qt do sistema. Ver a fase 9 de `docs/implementacao/21-migracao-para-qt.md`.
 [package.metadata.packager]
-product-name = "Zeebx Qt"
-identifier = "io.github.zeebxteam.zeebx.qt"
-publisher = "ZeebxTeam"
-homepage = "https://github.com/ZeebxTeam/zeebx-emu"
+product-name = "Dreamyemu Qt"
+identifier = "io.github.gitmanbloggus.dreamyemu.qt"
+publisher = "Dreamyemu"
+homepage = "https://github.com/gitmanbloggus/dreamyemu"
 category = "Game"
-description = "O emulador definitivo de Zeebo!"
+description = "HTC Dream (T-Mobile G1) emulator"
 out-dir = "../../target/pacotes"
-before-packaging-command = "cargo build --release --locked -p zeebx-standalone-qt"
-icons = ["../../assets/icones/zeebx-512.png", "../../assets/icones/zeebx.ico", "../../assets/icones/zeebx.icns"]
+before-packaging-command = "cargo build --release --locked -p dreamyemu-standalone-qt"
+icons = ["../../assets/icones/dreamyemu-512.png", "../../assets/icones/dreamyemu.ico", "../../assets/icones/dreamyemu.icns"]
 # O Qt do Windows, que o `windeployqt` junta nesta pasta — as DLLs, os plugins e os módulos QML — e
-# o NSIS instala ao lado do `zeebx-qt.exe`, com as subpastas. Só existe no Windows: nos outros sistemas
+# o NSIS instala ao lado do `dreamyemu-qt.exe`, com as subpastas. Só existe no Windows: nos outros sistemas
 # o caminho não casa com nada, e o `cargo packager` não inclui nada.
 # O texto das licenças vai em todo instalador, numa pasta `licenses` ao lado do programa (no `.deb`,
 # em `/usr/lib/<binário>/licenses`; no macOS, em `Contents/Resources/licenses`). Ver o
@@ -61,7 +61,7 @@ resources = [
 ]
 
 [[package.metadata.packager.binaries]]
-path = "zeebx-qt"
+path = "dreamyemu-qt"
 main = true
 
 [package.metadata.packager.deb]
@@ -111,7 +111,7 @@ section = "games"
 linuxdeploy-plugins = { qt = "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage" }
 
 [package.metadata.packager.nsis]
-installer-icon = "../../assets/icones/zeebx.ico"
+installer-icon = "../../assets/icones/dreamyemu.ico"
 installer-mode = "currentUser"
 languages = ["PortugueseBR", "English", "Spanish"]
 

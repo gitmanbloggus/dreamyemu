@@ -1357,7 +1357,7 @@ impl<C: CpuBackend> Machine<C> {
                 //
                 // **Desligado por padrão**, e a razão é medida: o censo entra no relatório, o
                 // relatório entra na linha de base, e uma seção nova faria os **62 jogos** da
-                // varredura acusarem diferença de uma vez. Ele se liga com `ZEEBX_ROM_SELETORES`,
+                // varredura acusarem diferença de uma vez. Ele se liga com `DREAMYEMU_ROM_SELETORES`,
                 // como o perfil de custo.
                 if self.censo_de_widgets {
                     let classe = self.widgets.get(&this).map_or(0, |widget| widget.classe);
@@ -1868,7 +1868,7 @@ pub fn caminho_do_html() -> std::path::PathBuf {
 const HTML_PADRAO: &str = "<html>
 <body>
 <h1>Ajuda</h1>
-<p>Esta página é um espaço reservado do Zeebx.</p>
+<p>Esta página é um espaço reservado do Dreamyemu.</p>
 <p>O console mostrava aqui as páginas de ajuda da Z-Wheel. Enquanto o visualizador de HTML
 não existe no emulador, o texto vem deste arquivo, que pode ser editado livremente.</p>
 </body>

@@ -206,7 +206,7 @@ mod testes {
     /// A assinatura decide, e não a extensão: um `.7z` chamado `.zip` continua sendo `.7z`.
     #[test]
     fn reconhece_pela_assinatura_e_nao_pela_extensao() {
-        let pasta = TempDir::new("zeebx-7z-magia");
+        let pasta = TempDir::new("dreamyemu-7z-magia");
         let pacote = pasta.join("jogo.zip");
         escreve_7z(&pacote, &[("Titulo/mod/1/a.mod", b"mod")]);
         assert!(eh_sete_z(&pacote));
@@ -221,7 +221,7 @@ mod testes {
     /// extração do arquivo inteiro.
     #[test]
     fn acha_o_modulo_e_o_manifesto_dentro_do_7z() {
-        let pasta = TempDir::new("zeebx-7z-jogo");
+        let pasta = TempDir::new("dreamyemu-7z-jogo");
         let pacote = pasta.join("Jogo.7z");
         escreve_7z(
             &pacote,
@@ -251,7 +251,7 @@ mod testes {
     /// Caminho com `..` é recusado, e nada é escrito fora do destino.
     #[test]
     fn recusa_caminho_que_sai_do_destino() {
-        let pasta = TempDir::new("zeebx-7z-inseguro");
+        let pasta = TempDir::new("dreamyemu-7z-inseguro");
         let pacote = pasta.join("malicioso.7z");
         escreve_7z(&pacote, &[("../fora.txt", b"nao devia estar aqui")]);
 

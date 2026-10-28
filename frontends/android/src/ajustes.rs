@@ -1,6 +1,6 @@
 //! As configurações, para um polegar.
 //!
-//! O que se mexe aqui é o **mesmo** [`zeebx::ui::settings::Settings`] do desktop, gravado no
+//! O que se mexe aqui é o **mesmo** [`dreamyemu::ui::settings::Settings`] do desktop, gravado no
 //! mesmo formato, e os rótulos saem do mesmo catálogo de idiomas. O que não é o mesmo é a
 //! forma: no desktop as abas ficam em cima e cada opção é uma caixinha com a legenda ao lado;
 //! aqui as seções ficam numa trilha à esquerda — o aparelho é travado em paisagem, e em
@@ -10,11 +10,11 @@
 //! e o mapeamento dos controles, o Discord e as atualizações ainda não estão ligados neste
 //! frontend. A seção "Controles" daqui é a dos controles desenhados na tela.
 
-use zeebx::input::bindings::Source;
-use zeebx::ui::settings::{self, ModoDosControlesNaTela, Proporcao, Scaling, Settings};
-use zeebx::velocidade::turbo::{self, ModoDoTurbo};
-use zeebx::velocidade::rewind::AjustesDoRewind;
-use zeebx::velocidade::{Avanco, Frameskip, LimiteFps, ModoDoAtalho};
+use dreamyemu::input::bindings::Source;
+use dreamyemu::ui::settings::{self, ModoDosControlesNaTela, Proporcao, Scaling, Settings};
+use dreamyemu::velocidade::turbo::{self, ModoDoTurbo};
+use dreamyemu::velocidade::rewind::AjustesDoRewind;
+use dreamyemu::velocidade::{Avanco, Frameskip, LimiteFps, ModoDoAtalho};
 
 use crate::tema::ALVO;
 use crate::{Emulador, Onde, sistema, widgets};
@@ -655,7 +655,7 @@ impl Emulador {
             mudou |= widgets::interruptor(ui, chave, catalogo.get(rotulo), None, dica, valor);
         }
 
-        // O turbo do jogador 1, o único que o Android tem. Ver `zeebx::velocidade::turbo`.
+        // O turbo do jogador 1, o único que o Android tem. Ver `dreamyemu::velocidade::turbo`.
         widgets::secao(ui, catalogo.get("turbo"));
         let jogador = self.settings.controls.player_mut(0);
         let modos: Vec<(ModoDoTurbo, String)> = ModoDoTurbo::TODOS
@@ -786,8 +786,8 @@ impl Emulador {
         // Um link aqui não abre nada sozinho: é a `Intent` de VIEW que manda o endereço para o
         // navegador do aparelho.
         for (chave, endereco) in [
-            ("about.repository", zeebx::ui::REPOSITORIO),
-            ("about.discord", zeebx::ui::DISCORD),
+            ("about.repository", dreamyemu::ui::REPOSITORIO),
+            ("about.discord", dreamyemu::ui::DISCORD),
         ] {
             if widgets::navega(ui, self.tr(chave), endereco) {
                 sistema::abre_endereco(&self.app, endereco);

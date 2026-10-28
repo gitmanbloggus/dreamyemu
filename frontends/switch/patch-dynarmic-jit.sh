@@ -6,7 +6,7 @@ header="${root}/externals/oaknut/include/oaknut/code_block.hpp"
 if [[ ! -f "${header}" ]]; then
 	exit 0
 fi
-if grep -q ZEEBX_SWITCH_JIT "${header}"; then
+if grep -q DREAMYEMU_SWITCH_JIT "${header}"; then
 	exit 0
 fi
 patch -p1 -d "${root}" < "$(dirname "$0")/dynarmic-jit.patch"
@@ -51,6 +51,6 @@ if old not in text:
     raise SystemExit("spin lock emit block not found")
 # O patch mexe nas fontes do crate em ~/.cargo/registry, que o build de desktop também usa.
 # Sem a guarda, um build AArch64 de desktop feito depois fica sem switch_spinlock_lock no link.
-guarded = "#if defined(ZEEBX_SWITCH_JIT)\n" + new + "#else\n" + old + "#endif\n"
+guarded = "#if defined(DREAMYEMU_SWITCH_JIT)\n" + new + "#else\n" + old + "#endif\n"
 path.write_text(text.replace(old, guarded, 1))
 PY

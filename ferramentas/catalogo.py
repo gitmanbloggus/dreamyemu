@@ -19,7 +19,7 @@ O que ele escreve:
 Uso:
 
     python3 ferramentas/catalogo.py --roms /caminho/dos/zips --saida /caminho/de/saida \\
-        [--dat arquivo.dat] [--core /caminho/zeebx_libretro.so] [--icones]
+        [--dat arquivo.dat] [--core /caminho/dreamyemu_libretro.so] [--icones]
 """
 
 import argparse
@@ -255,7 +255,7 @@ def escreve_playlist(saida, fichas, core):
                 "path": str(ficha["caminho"]),
                 "label": ficha["nome_no_intro"],
                 "core_path": core or "DETECT",
-                "core_name": "Zeebx" if core else "DETECT",
+                "core_name": "Dreamyemu" if core else "DETECT",
                 "crc32": f"{ficha['crc_zip']}|crc",
                 "db_name": f"{DAT_NOME}.lpl",
             }
@@ -263,7 +263,7 @@ def escreve_playlist(saida, fichas, core):
     documento = {
         "version": "1.5",
         "default_core_path": core or "",
-        "default_core_name": "Zeebx" if core else "",
+        "default_core_name": "Dreamyemu" if core else "",
         "label_display_mode": 0,
         "right_thumbnail_mode": 0,
         "left_thumbnail_mode": 0,
@@ -359,7 +359,7 @@ def escreve_fora_do_dat(saida, fichas):
         '\tname "Mobile - Zeebo"',
         '\tdescription "Mobile - Zeebo (proposta: titulos ausentes)"',
         f'\tversion "{VERSAO_DA_PROPOSTA}"',
-        '\thomepage "https://github.com/requeijaum/zeebx-emu"',
+        '\thomepage "https://github.com/requeijaum/dreamyemu"',
         ")",
         "",
     ]
@@ -601,7 +601,7 @@ def main():
     ap.add_argument("--playlists", type=pathlib.Path, default=None,
                     help="pasta de playlists do RetroArch (padrão: <saída>/playlists)")
     ap.add_argument("--dat", type=pathlib.Path, default=None)
-    ap.add_argument("--core", default=None, help="caminho do zeebx_libretro.so para a playlist")
+    ap.add_argument("--core", default=None, help="caminho do dreamyemu_libretro.so para a playlist")
     ap.add_argument("--icones", action="store_true", help="grava o ícone do .mif como título")
     ap.add_argument(
         "--png",

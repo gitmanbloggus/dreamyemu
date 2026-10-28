@@ -1,12 +1,20 @@
 //! The Dream's SDL window, with virtual buttons.
 //!
-//! Runs the SPL live bring-up (`zeebx::msm7201a`, the same harness as the
+//! Runs the SPL live bring-up (`dreamyemu::msm7201a`, the same harness as the
 //! discovery test) and shows the framebuffer (`RAM_A6C0_BASE`,
 //! 320x480 RGB565) in an SDL2 window, with the SPL serial on stdout. Usage:
 //!
 //! ```sh
-//! cargo run -p zeebx-sdl -- [spl.bin [nand.img]] [--sair] [--botao <nome>]
+//! cargo run -p dreamyemu-sdl -- [spl.bin [nand.img]] [--sair] [--botao <nome>]
+//!   [--snapshot-save <fatia>] [--snapshot-arquivo <caminho>]
+//!   [--snapshot-load <caminho>]
+//!   [--snapshot-vigia ADDR[,LEN]]
 //! ```
+//!
+//! Snapshots (TEMP, bring-up): `--snapshot-save 375000` fotografa o
+//! mundo no topo da fatia e sai; `--snapshot-load snap.bin` retoma
+//! dali. `--snapshot-vigia` arma o watchpoint pós-carga sem
+//! re-salvar. Atalho para depurar a 6 min por iteração.
 //!
 //! Without arguments, looks for `tests/spl/G1OrigBootloader_nocheck/spl.bin` and
 //! `tests/spl/nand.img` from the current directory. The SPL is a third-party
@@ -24,9 +32,11 @@
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use zeebx::cpu::CpuBackend;
-use zeebx::msm7201a::{
-    Botoes, RAM_A6C0_BASE, RAM_A6C0_TAMANHO, executa_spl_vivo_com_botoes, rx_enfileira,
+use dreamyemu::cpu::CpuBackend;
+use dreamyemu::msm7201a::{
+    Botoes, FB_LINUX_MAPA, RAM_A6C0_BASE, RAM_A6C0_TAMANHO, SNAPSHOT_LOAD_PATH,
+    SNAPSHOT_SAVE_FATIA, SNAPSHOT_SAVE_PATH, SNAPSHOT_VIGIA, executa_spl_vivo_com_botoes,
+    rx_enfileira,
 };
 
 const LARGURA: u32 = 320;
@@ -102,6 +112,27 @@ fn main() -> std::process::ExitCode {
             salvar_nand = it.next().cloned();
         } else if a == "--fatias" {
             fatias = it.next().and_then(|s| s.parse().ok()).unwrap_or(fatias);
+        } else if a == "--snapshot-save" {
+            // TEMP (snapshots): fotografa no topo desta fatia e sai.
+            if let Some(n) = it.next().and_then(|s| s.parse().ok()) {
+                unsafe { SNAPSHOT_SAVE_FATIA = n };
+            }
+        } else if a == "--snapshot-arquivo" {
+            // TEMP (snapshots): destino do save / origem do load
+            // quando a flag irmã não traz caminho próprio.
+            if let Some(p) = it.next() {
+                let _ = SNAPSHOT_SAVE_PATH.set(p.clone());
+            }
+        } else if a == "--snapshot-load" {
+            // TEMP (snapshots): retoma daqui em vez de bootar do zero.
+            if let Some(p) = it.next() {
+                let _ = SNAPSHOT_LOAD_PATH.set(p.clone());
+            }
+        } else if a == "--snapshot-vigia" {
+            // TEMP (snapshots): `ADDR[,LEN]` arma a vigia pós-carga.
+            if let Some(p) = it.next() {
+                let _ = SNAPSHOT_VIGIA.set(p.clone());
+            }
         } else if a != "--sair" {
             resto.push(a.clone());
         }
@@ -231,8 +262,16 @@ fn main() -> std::process::ExitCode {
     video.text_input().start();
     let mut fb = vec![0u8; RAM_A6C0_TAMANHO];
     let mut rgb = vec![0u8; (LARGURA * ALTURA * 3) as usize];
+    // TEMP (Linux fb watch): FBBASE's fbram VA, logged by the harness
+    // (identical across runs: 0xC60DD520). Unmapped on our side — the
+    // kernel draws through the direct map, not the ioremap window —
+    // so this only names the window until FB_LINUX_MAPA fires.
+    // Remove with the FBDUMP sampler below.
+    const FB_LINUX_VA: u32 = 0xC60D_D520;
+    let mut fb_linux = vec![0u8; RAM_A6C0_TAMANHO];
     let mut ultimo_envio = Instant::now() - Duration::from_secs(1);
     let mut mostrou = false;
+    let mut mostrou_linux = false;
     let mut stdout = std::io::stdout().lock();
     // Reboot request with the current combo held (R/Enter or the RBT cell): the
     // callback returns false and the outer loop runs the SPL again, CPU
@@ -366,9 +405,18 @@ fn main() -> std::process::ExitCode {
             let suprimidas_cb = suprimidas.clone();
             let devolve = |fatia: u32,
                            _pc: u32,
-                           _cpu: &mut zeebx::cpu::interpretador::Interpretador,
+                           cpu: &mut dreamyemu::cpu::dual::DualBackend,
                            serial: &[u8]|
              -> bool {
+                // Android logcat: drain the kernel logger rings
+                // (main/events/radio) into host stdout. This is the
+                // userspace counterpart to the klog tap — init,
+                // servicemanager, dalvik, debuggerd and the crashing
+                // processes all speak here.
+                for linha in dreamyemu::msm7201a::colhe_logcat(cpu) {
+                    let _ = writeln!(stdout, "{linha}");
+                }
+                let _ = stdout.flush();
                 if !serial.is_empty() {
                     // Bytes may split lines across slices; buffer them and
                     // emit whole lines so the filter sees complete text.
@@ -407,6 +455,58 @@ fn main() -> std::process::ExitCode {
                 // locate where long runs (91 MB flash) stop.
                 if fatia % 20_000 == 0 {
                     eprintln!("fatia={fatia} pc={_pc:#x}");
+                    // Presenter's source, first set wins: the FBMAP hunt
+                    // publishes (mm, va0) when boot animation mmaps the fb.
+                    let va_linux = unsafe { FB_LINUX_MAPA }.1;
+                    let va = if va_linux != 0 { va_linux } else { FB_LINUX_VA };
+                    if cpu.read_mem(va, &mut fb_linux).is_ok() {
+                        let mut nz = 0u32;
+                        let mut h = 0xcbf29ce4u32;
+                        for par in fb_linux.chunks_exact(2) {
+                            let v = u16::from_le_bytes([par[0], par[1]]);
+                            if v != 0 {
+                                nz += 1;
+                            }
+                            h ^= v as u32;
+                            h = h.wrapping_mul(0x01000193);
+                        }
+                        let qual = if va_linux != 0 { "mapa" } else { "fbram" };
+                        eprintln!("FBDUMP f={fatia} {qual} va={va:#x} nonzero={nz} hash={h:#x}");
+                    } else {
+                        eprintln!("FBDUMP f={fatia} va={va:#x} unmapped", va = va);
+                    }
+                    // TEMP (MDP DMA hunt): the kernel mdp driver programs
+                    // the display DMA from a static 562-pair table; the
+                    // source address it lands in the E00xxxxx stubs IS the
+                    // scanned-out fb, whoever draws it. Dump nonzero stub
+                    // words (cap 40) so the RAM-ish value stands out.
+                    // Remove once the presenter tracks the MDP source.
+                    if fatia >= 100_000 {
+                        let mut mdp = vec![0u8; 0x1000];
+                        let mut mostrados = 0;
+                        for base in [0xE001_0000u32, 0xE002_0000, 0xE005_0000, 0xE006_0000] {
+                            if cpu.read_mem(base, &mut mdp).is_err() {
+                                continue;
+                            }
+                            for (i, w) in mdp.chunks_exact(4).enumerate() {
+                                let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                                if v != 0 {
+                                    if mostrados < 40 {
+                                        eprintln!(
+                                            "MDPDUMP f={fatia} {:#x}+{:#x}={:#x}",
+                                            base,
+                                            i * 4,
+                                            v
+                                        );
+                                    }
+                                    mostrados += 1;
+                                }
+                            }
+                        }
+                        if mostrados > 0 {
+                            eprintln!("MDPDUMP f={fatia} total_nonzero={mostrados}");
+                        }
+                    }
                 }
                 let _ = fatia;
                 for evento in eventos.poll_iter() {
@@ -451,7 +551,11 @@ fn main() -> std::process::ExitCode {
                     return false;
                 }
                 if ultimo_envio.elapsed() >= Duration::from_millis(33) {
-                    if _cpu.read_mem(RAM_A6C0_BASE, &mut fb).is_ok() {
+                    // Linux fb once the FBMAP hunt names it, else the SPL
+                    // splash: first set wins and sticks (no switching back).
+                    let va_linux = unsafe { FB_LINUX_MAPA }.1;
+                    let va = if va_linux != 0 { va_linux } else { RAM_A6C0_BASE };
+                    if cpu.read_mem(va, &mut fb).is_ok() {
                         rgb565_para_rgb888(&fb, &mut rgb);
                         let _ = textura.update(None, &rgb, (LARGURA * 3) as usize);
                         let _ = tela.copy(&textura, None, None);
@@ -462,6 +566,14 @@ fn main() -> std::process::ExitCode {
                             // Show the window when the first frame arrives (the WM
                             // may have opened it minimized asking for attention).
                             tela.window_mut().raise();
+                        }
+                        // Proof artifact: first Linux frame to disk (PPM).
+                        if va_linux != 0 && !mostrou_linux {
+                            mostrou_linux = true;
+                            let mut ppm = format!("P6\n{LARGURA} {ALTURA}\n255\n").into_bytes();
+                            ppm.extend_from_slice(&rgb);
+                            let _ = std::fs::write("/tmp/opencode/fb_linux.ppm", &ppm);
+                            eprintln!("FBDUMP first linux frame -> /tmp/opencode/fb_linux.ppm");
                         }
                     }
                 }

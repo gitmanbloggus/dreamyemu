@@ -389,7 +389,7 @@ mod tests {
     }
 
     fn temporario(nome: &str) -> crate::scratch::TempDir {
-        crate::scratch::TempDir::new(&format!("zeebx-saves-{nome}"))
+        crate::scratch::TempDir::new(&format!("dreamyemu-saves-{nome}"))
     }
 
     #[test]
@@ -531,7 +531,7 @@ mod tests {
     }
 
     fn dirs_config() -> PathBuf {
-        PathBuf::from(std::env::var("HOME").unwrap()).join(".config/zeebx")
+        PathBuf::from(std::env::var("HOME").unwrap()).join(".config/dreamyemu")
     }
 
     #[test]

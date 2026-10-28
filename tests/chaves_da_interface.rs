@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 
-use zeebx::ui::i18n::Catalog;
+use dreamyemu::ui::i18n::Catalog;
 
 /// `settings.discord.on`: minúsculas, dígitos e `_`, com ao menos um ponto. Nome de arquivo não.
 fn tem_cara_de_chave(texto: &str) -> bool {
@@ -125,9 +125,9 @@ fn toda_chave_usada_pela_interface_existe_no_catalogo() {
 fn a_extracao_reconhece_chave_e_ignora_o_resto() {
     assert!(tem_cara_de_chave("saves.confirm.yes"));
     assert!(tem_cara_de_chave("settings.z_wheel_eol"));
-    assert!(!tem_cara_de_chave("zeebx.log"));
+    assert!(!tem_cara_de_chave("dreamyemu.log"));
     assert!(!tem_cara_de_chave("quadro.h"));
-    assert!(!tem_cara_de_chave("Zeebx"));
-    assert!(!tem_cara_de_chave("qrc:/zeebx/boomerang.png"));
+    assert!(!tem_cara_de_chave("Dreamyemu"));
+    assert!(!tem_cara_de_chave("qrc:/dreamyemu/boomerang.png"));
     assert_eq!(literais(r#"tr(a ? "x.y" : "z.w")"#), ["x.y", "z.w"]);
 }

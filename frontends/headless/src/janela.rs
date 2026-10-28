@@ -6,7 +6,7 @@
 //! rasterizar o 3D. Girar um laço de egui por baixo de nada seria pagar a interface inteira
 //! para desenhar um retângulo.
 //!
-//! O contexto **é o da janela**, e não o de fora de tela do [`zeebx::video::contexto`]. Com
+//! O contexto **é o da janela**, e não o de fora de tela do [`dreamyemu::video::contexto`]. Com
 //! janela, o quadro que a placa acabou de preencher já está na memória dela: pintá-lo é ligar a
 //! textura e desenhar um triângulo. Pelo contexto de fora de tela ele teria de voltar à CPU e
 //! subir de novo, uma vez por quadro.
@@ -23,8 +23,8 @@ use raw_window_handle::HasWindowHandle;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Fullscreen, Window, WindowAttributes};
 
-use zeebx::ui::gpu::Pintor;
-use zeebx::ui::settings::Scaling;
+use dreamyemu::ui::gpu::Pintor;
+use dreamyemu::ui::settings::Scaling;
 
 use crate::config::{Headless, Video};
 
@@ -136,7 +136,7 @@ impl Janela {
     /// `altura_nativa` é a do quadro do console, que é a unidade da escala inteira — a
     /// textura já vem ampliada pela resolução interna, e contar múltiplos sobre ela daria
     /// uma janela cheia de borda sem motivo.
-    pub fn mostra_textura(&mut self, quadro: zeebx::video::rasterizer::QuadroNaPlaca, altura_nativa: u32, escala: Scaling, proporcao_4_3: bool, suave: bool) {
+    pub fn mostra_textura(&mut self, quadro: dreamyemu::video::rasterizer::QuadroNaPlaca, altura_nativa: u32, escala: Scaling, proporcao_4_3: bool, suave: bool) {
         let aspecto = match proporcao_4_3 {
             true => Some(quadro.proporcao),
             false => None,
@@ -394,7 +394,7 @@ impl Aplicativo {
 
         // A proporção "a da janela" acompanha o tamanho dela, e por isso é dita a cada quadro;
         // qualquer outra foi dita uma vez, na abertura.
-        if g.proporcao == zeebx::ui::settings::Proporcao::Janela {
+        if g.proporcao == dreamyemu::ui::settings::Proporcao::Janela {
             let (largura, altura) = janela.tamanho();
             sessao.define_proporcao(Some(largura as f32 / altura.max(1) as f32));
         }

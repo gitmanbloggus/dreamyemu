@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 /// Nome da pasta do perfil criada por um frontend dentro dos diretórios dele.
 ///
 /// É **fixo e minúsculo de propósito**. O frontend já cria as pastas dele com o nome de exibição
-/// do core — o RetroArch grava `states/Zeebx` e `saves/Zeebx.srm` —, e derivar este nome da mesma
+/// do core — o RetroArch grava `states/Dreamyemu` e `saves/Dreamyemu.srm` —, e derivar este nome da mesma
 /// fonte espalharia os dados por dois caminhos que só coincidem em sistema sem diferença de caixa.
-/// Num host Linux, `zeebx` e `Zeebx` são pastas diferentes, e o jogo passaria a ter dois perfis.
-pub const PROFILE_DIR: &str = "zeebx";
+/// Num host Linux, `dreamyemu` e `Dreamyemu` são pastas diferentes, e o jogo passaria a ter dois perfis.
+pub const PROFILE_DIR: &str = "dreamyemu";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoragePaths {
-    /// Raiz `.../zeebx` criada sob o diretório de saves do frontend.
+    /// Raiz `.../dreamyemu` criada sob o diretório de saves do frontend.
     pub root: PathBuf,
     /// Conteúdo extraído, descartável e somente-leitura lógica.
     pub cache: PathBuf,
@@ -40,7 +40,7 @@ impl StoragePaths {
     /// Cria o layout a partir de uma raiz de perfil já escolhida.
     ///
     /// A UI desktop atual usa sua configuração diretamente como raiz. O frontend Libretro usa
-    /// [`StoragePaths::from_save_dir`] para acrescentar a pasta `zeebx` sem escrever na ROM.
+    /// [`StoragePaths::from_save_dir`] para acrescentar a pasta `dreamyemu` sem escrever na ROM.
     pub fn from_root(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         Self {
@@ -376,10 +376,10 @@ mod tests {
     #[test]
     fn perfil_separa_aparelho_e_cache_no_sistema_e_saves_no_jogo() {
         let paths = StoragePaths::for_frontend("/saves", Some("/sistema"));
-        assert_eq!(paths.saves, PathBuf::from("/saves/zeebx/saves"));
-        assert_eq!(paths.metadata, PathBuf::from("/saves/zeebx/metadata"));
-        assert_eq!(paths.device, PathBuf::from("/sistema/zeebx/aparelho"));
-        assert_eq!(paths.cache, PathBuf::from("/sistema/zeebx/cache"));
+        assert_eq!(paths.saves, PathBuf::from("/saves/dreamyemu/saves"));
+        assert_eq!(paths.metadata, PathBuf::from("/saves/dreamyemu/metadata"));
+        assert_eq!(paths.device, PathBuf::from("/sistema/dreamyemu/aparelho"));
+        assert_eq!(paths.cache, PathBuf::from("/sistema/dreamyemu/cache"));
         assert!(paths.overlay);
     }
 
@@ -387,19 +387,19 @@ mod tests {
     #[test]
     fn sem_sistema_o_perfil_inteiro_cabe_nos_saves() {
         let paths = StoragePaths::for_frontend("/saves", None::<&Path>);
-        assert_eq!(paths.device, PathBuf::from("/saves/zeebx/aparelho"));
-        assert_eq!(paths.cache, PathBuf::from("/saves/zeebx/cache"));
-        assert_eq!(paths.saves, PathBuf::from("/saves/zeebx/saves"));
+        assert_eq!(paths.device, PathBuf::from("/saves/dreamyemu/aparelho"));
+        assert_eq!(paths.cache, PathBuf::from("/saves/dreamyemu/cache"));
+        assert_eq!(paths.saves, PathBuf::from("/saves/dreamyemu/saves"));
     }
 
     /// O nome do perfil é fixo e minúsculo: nunca pode sair do nome de exibição do core, senão
-    /// `zeebx` e `Zeebx` viram dois perfis num host que distingue caixa.
+    /// `dreamyemu` e `Dreamyemu` viram dois perfis num host que distingue caixa.
     #[test]
     fn o_nome_do_perfil_nao_depende_da_caixa_do_core() {
-        assert_eq!(PROFILE_DIR, "zeebx");
+        assert_eq!(PROFILE_DIR, "dreamyemu");
         let paths = StoragePaths::for_frontend("/saves", Some("/sistema"));
         // **Componente a componente, e não texto com barra.** O separador do Windows é `\`, e
-        // procurar `/zeebx/` na string fazia este teste falhar só ali — acusando o produto por um
+        // procurar `/dreamyemu/` na string fazia este teste falhar só ali — acusando o produto por um
         // detalhe do sistema de arquivos de quem roda o teste.
         let partes: Vec<String> = paths
             .saves
@@ -407,12 +407,12 @@ mod tests {
             .map(|parte| parte.to_string_lossy().to_string())
             .collect();
         assert!(partes.iter().any(|parte| parte == PROFILE_DIR), "{partes:?}");
-        assert!(!partes.iter().any(|parte| parte == "Zeebx"), "{partes:?}");
+        assert!(!partes.iter().any(|parte| parte == "Dreamyemu"), "{partes:?}");
     }
 
     #[test]
     fn o_desktop_usa_overlay_fora_do_cache() {
-        let paths = StoragePaths::from_root("/config/zeebx");
+        let paths = StoragePaths::from_root("/config/dreamyemu");
         assert!(paths.overlay);
         assert!(!paths.saves.starts_with(&paths.cache));
     }
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn migra_save_legado_do_cache_sem_copiar_o_pacote() {
-        let root = crate::scratch::TempDir::new("zeebx-storage-migrate");
+        let root = crate::scratch::TempDir::new("dreamyemu-storage-migrate");
         let package = root.join("jogo.zip");
         let file = std::fs::File::create(&package).unwrap();
         let mut writer = zip::ZipWriter::new(file);
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn migra_o_cache_com_nome_antigo_e_reconstroi_o_manifesto() {
-        let root = crate::scratch::TempDir::new("zeebx-storage-migrate-legacy");
+        let root = crate::scratch::TempDir::new("dreamyemu-storage-migrate-legacy");
         let package = root.join("velho.zip");
         let file = std::fs::File::create(&package).unwrap();
         let mut writer = zip::ZipWriter::new(file);

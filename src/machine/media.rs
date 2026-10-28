@@ -7,9 +7,9 @@ use super::*;
 ///
 /// No Switch, 64 entradas descartam uma trilha que ninguém está tocando e a próxima
 /// reprodução sintetiza de novo. O teto em bytes continua sendo o limite de memória.
-#[cfg(zeebx_switch)]
+#[cfg(dreamyemu_switch)]
 const MAX_SONS_GUARDADOS: usize = 512;
-#[cfg(not(zeebx_switch))]
+#[cfg(not(dreamyemu_switch))]
 const MAX_SONS_GUARDADOS: usize = 64;
 
 /// Quanto de PCM decodificado o cache guarda, em bytes, antes de esquecer os que ninguém usa.

@@ -28,7 +28,7 @@ pub mod qobject {
     }
 
     // Ver `cpp/gl_qt.h`.
-    #[namespace = "zeebx"]
+    #[namespace = "dreamyemu"]
     unsafe extern "C++" {
         include!("gl_qt.h");
         fn prepara_gl();
@@ -165,9 +165,9 @@ use std::pin::Pin;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QImage, QImageFormat, QList, QRectF, QString};
 
-use zeebx::egui::Key;
-use zeebx::ui::partida::enquadra;
-use zeebx::ui::settings::ModoDaJanela;
+use dreamyemu::egui::Key;
+use dreamyemu::ui::partida::enquadra;
+use dreamyemu::ui::settings::ModoDaJanela;
 
 use super::nucleo::{self, Quadro};
 
@@ -516,7 +516,7 @@ fn nome_da_tecla(codigo: i32) -> Option<String> {
 mod tests {
     use super::{Key, tecla_do_qt};
 
-    /// A seta do Qt é a seta do egui: daí em diante vale [`zeebx::ui::entrada::tecla_apertada`],
+    /// A seta do Qt é a seta do egui: daí em diante vale [`dreamyemu::ui::entrada::tecla_apertada`],
     /// que aceita as duas grafias do `settings.json`.
     #[test]
     fn a_seta_do_qt_e_a_do_egui() {

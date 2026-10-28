@@ -77,7 +77,7 @@ jobs:
 
       - name: Compila e monta a APK
         env:
-          ZEEBX_ANDROID_ABI: ${{ matrix.abi }}
+          DREAMYEMU_ANDROID_ABI: ${{ matrix.abi }}
         run: frontends/android/compilar.sh --apk
 
       # O que a release não confere: abrir a APK e olhar a biblioteca que está lá dentro. Uma APK
@@ -85,7 +85,7 @@ jobs:
       - name: A APK leva a biblioteca certa
         shell: bash
         run: |
-          apk=frontends/android/apk/app/build/outputs/apk/debug/zeebx-android-${{ matrix.abi }}.apk
+          apk=frontends/android/apk/app/build/outputs/apk/debug/dreamyemu-android-${{ matrix.abi }}.apk
           ls -la "$apk"
           unzip -l "$apk" | grep "lib/${{ matrix.abi }}/"
           if unzip -l "$apk" | grep -qE 'lib/(x86|x86_64|armeabi-v7a)/'; then
@@ -103,7 +103,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: zeebx-android-${{ matrix.abi }}
-          path: frontends/android/apk/app/build/outputs/apk/debug/zeebx-android-${{ matrix.abi }}.apk
+          name: dreamyemu-android-${{ matrix.abi }}
+          path: frontends/android/apk/app/build/outputs/apk/debug/dreamyemu-android-${{ matrix.abi }}.apk
           if-no-files-found: error
           retention-days: 14

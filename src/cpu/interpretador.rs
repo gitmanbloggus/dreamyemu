@@ -10,6 +10,9 @@
 //! where the emitted block does not run, and into iOS, where the system does not let the
 //! process map code.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use super::mem::GuestMemory;
 use super::{API_BASE, API_SIZE, RETURN_MAGIC, apara_semihosting};
 use super::{CpuBackend, CpuError, Reg, StopReason};
@@ -30,6 +33,11 @@ pub static mut ULTIMA_ENTREGA: u32 = 0;
 /// (see entra_aborto): user page faults handled by the kernel's
 /// own do_page_fault instead of stopping the run.
 pub static mut TOTAL_ABORTOS: u32 = 0;
+/// MDDI host IRQ16 edge (see the MDDIWR watch in es_mem and
+/// vic_nivel): true while a command is outstanding (CMD doorbell
+/// written, INT not yet acked). Lets the VIC raise line 16 so the
+/// real MDDI IRQ handler runs and completes the waiters.
+pub static mut MDDI_IRQ_PENDENTE: bool = false;
 /// Total SVC (syscall) exceptions delivered to the guest kernel
 /// since reset (see entra_svc): Linux userspace syscalls (set_tls
 /// first — it writes the TLS value to 0xFFFF0FF0, without which
@@ -57,7 +65,12 @@ const SYS_WRITE0: u32 = 0x04;
 const MAX_SEMIHOSTING_STRING: u32 = 4096;
 
 pub struct Interpretador {
-    mem: GuestMemory,
+    /// Guest memory, shared with a sibling backend when the Dream harness
+    /// runs hybrid (see `DualBackend`): both backends read and write the
+    /// same map, so demand-paged content and trap-served bytes survive a
+    /// backend switch. Borrowed per access; never held across a hook call
+    /// (hooks receive `&mut` directly instead of re-borrowing).
+    mem: Rc<RefCell<GuestMemory>>,
     r: [u32; 16],
     cpsr: u32,
     instrucoes: u64,
@@ -125,8 +138,17 @@ pub struct Interpretador {
 
 impl Interpretador {
     pub fn new() -> Result<Self, CpuError> {
+        Self::with_shared_mem(Rc::new(RefCell::new(GuestMemory::new())))
+    }
+
+    /// Same as `new`, but the guest map is shared with a sibling backend
+    /// (see `DualBackend`): both backends read and write the same bytes,
+    /// so demand-paged and trap-served content survives a backend switch.
+    /// `reset` replaces the map *contents* without swapping the `Rc`,
+    /// keeping every clone valid.
+    pub fn with_shared_mem(mem: Rc<RefCell<GuestMemory>>) -> Result<Self, CpuError> {
         Ok(Self {
-            mem: GuestMemory::new(),
+            mem,
             r: [0; 16],
             cpsr: MODO_USUARIO,
             instrucoes: 0,
@@ -156,6 +178,90 @@ impl Interpretador {
     /// Dynarmic-compatible.
     pub fn estado_completo(&self) -> ([u32; 16], u32, [u32; 6], [[u32; 2]; 6]) {
         (self.r, self.cpsr, self.spsr, self.banco)
+    }
+
+    /// User-owned zeroed region for the current mm (demand-paged user
+    /// page: text, stack, heap). Inherent (not trait): only the
+    /// interpreter backend needs it and the trait stays
+    /// Dynarmic-compatible.
+    pub fn map_usuario_zeroed(&mut self, name: &'static str, base: u32, len: usize) -> Result<(), CpuError> {
+        self.mem.borrow_mut()
+            .map_usuario_zeroed(name, base, len)
+            .map_err(|e| CpuError(e.to_string()))
+    }
+
+    /// TEMP (snapshots): fotografa o núcleo arquitetural (o guest vê
+    /// isto; traps, vigias canário, histórico e `fonte_irq` são da
+    /// harness e remontados pelo setup). Remove com o CRASHOBJ se os
+    /// snapshots não vingarem.
+    pub(crate) fn foto_nucleo(&self) -> crate::msm7201a_snapshot::NucleoFoto {
+        crate::msm7201a_snapshot::NucleoFoto {
+            r: self.r,
+            cpsr: self.cpsr,
+            spsr: self.spsr,
+            banco: self.banco,
+            exclusivo: self.exclusivo,
+            instrucoes: self.instrucoes,
+            cp15: self.cp15.clone(),
+            esperando: self.esperando,
+            irq_pendente: self.irq_pendente,
+            timer_sujo: self.timer_sujo,
+            sondagem_irq: self.sondagem_irq,
+            desde_interp: 0,
+        }
+    }
+
+    /// TEMP (snapshots): restaura o núcleo (par de `foto_nucleo`).
+    pub(crate) fn aplica_nucleo(&mut self, n: &crate::msm7201a_snapshot::NucleoFoto) {
+        self.r = n.r;
+        self.cpsr = n.cpsr;
+        self.spsr = n.spsr;
+        self.banco = n.banco;
+        self.exclusivo = n.exclusivo;
+        self.instrucoes = n.instrucoes;
+        self.cp15 = n.cp15.clone();
+        self.esperando = n.esperando;
+        self.irq_pendente = n.irq_pendente;
+        self.timer_sujo = n.timer_sujo;
+        self.sondagem_irq = n.sondagem_irq;
+    }
+
+    /// Current address space key (masked TTBR0, tracked on MCR).
+    pub fn mm_atual(&self) -> u32 {
+        self.mem.borrow().mm_atual()
+    }
+
+    /// Current execve generation (bumped whenever exec replaces the
+    /// image, so per-(mm, base) trackers tell a post-exec re-fault
+    /// from a tight abort loop).
+    pub fn geracao(&self) -> u32 {
+        self.mem.borrow().geracao()
+    }
+
+    /// Records which physical page a user region was mirrored from
+    /// (for the adopt check on post-exec re-faults).
+    pub fn anotar_semente(&mut self, base: u32, pa: u32) {
+        self.mem.borrow_mut().anotar_semente(base, pa);
+    }
+
+    /// Sibling mapping of the same VA in another current-generation
+    /// mm mirroring the same physical page, if any (fork-COW content
+    /// to copy instead of seeding zeros from a pa bank that never
+    /// held user bytes). The pa gate keeps different binaries sharing
+    /// the 0x8000 load address from swapping text.
+    pub fn irmao_mesma_va(&self, base: u32, pa: u32) -> Option<Vec<u8>> {
+        self.mem.borrow().irmao_mesma_va(base, pa)
+    }
+
+    /// Current mm's own region at `base`, if any (seed pa + generation,
+    /// regardless of whether the generation is still current).
+    pub fn regiao_propria(&self, base: u32) -> Option<(Option<u32>, u32)> {
+        self.mem.borrow().regiao_propria(base)
+    }
+
+    /// Refreshes a same-pa region's generation in place (adopt).
+    pub fn adotar_geracao(&mut self, base: u32) {
+        self.mem.borrow_mut().adotar_geracao(base);
     }
 
     /// PCs of the last executed instructions, oldest first (up to 2048).
@@ -194,7 +300,7 @@ impl Interpretador {
 
     fn linha_irq(&mut self, livre: bool) -> bool {
         match self.fonte_irq.as_mut() {
-            Some(f) => f(&self.mem, livre),
+            Some(f) => f(&self.mem.borrow(), livre),
             None => false,
         }
     }
@@ -305,8 +411,8 @@ impl Interpretador {
         if self.r[13] == 0 {
             const PILHA_ABT: u32 = 0xC831_0000;
             const TAM_PILHA_ABT: usize = 0x1000;
-            if self.mem.read_u32(PILHA_ABT).is_err() {
-                let _ = self.mem.map_zeroed("pilha_abt", PILHA_ABT, TAM_PILHA_ABT);
+            if self.mem.borrow().read_u32(PILHA_ABT).is_err() {
+                let _ = self.mem.borrow_mut().map_zeroed("pilha_abt", PILHA_ABT, TAM_PILHA_ABT);
             }
             self.r[13] = PILHA_ABT.wrapping_add(TAM_PILHA_ABT as u32);
         }
@@ -334,6 +440,80 @@ impl Interpretador {
         self.r[15] = vet | if prefetch { 0x0C } else { 0x10 };
     }
 
+    /// Take an undefined-instruction exception for the faulting `r[15]`
+    /// (which sits AT the faulting instruction): delivers user-mode
+    /// garbage execution to the guest's own UND handler instead of
+    /// stopping the run — mandatory past service startup, where any
+    /// dying service (missing hardware, bad pointer) would otherwise
+    /// end the whole boot. The kernel's __und_usr sends SIGILL and
+    /// init restarts the service; the run continues. spsr_und (idx 5),
+    /// lr = fault+4 ARM / fault+2 Thumb (pipeline-correct; the guest
+    /// never resumes from it anyway), vector 0x04 (SCTLR.V aware).
+    /// I masked, A untouched (spec), ARM state. Counts in TOTAL_ABORTOS
+    /// (shares the abort budget: same delivery family). NOT re-entrant
+    /// (single spsr_und): the harness routes only USR-mode UNDs here.
+    pub fn entra_undef(&mut self) {
+        let velho = self.cpsr;
+        unsafe {
+            TOTAL_ABORTOS = TOTAL_ABORTOS.wrapping_add(1);
+        }
+        static mut NUND: u32 = 0;
+        unsafe {
+            if NUND < 80 {
+                NUND += 1;
+                let n = NUND;
+                let ins = if let Ok(s) = self.mem.borrow().read(self.r[15] & !3, 4) {
+                    u32::from_le_bytes([s[0], s[1], s[2], s[3]])
+                } else {
+                    0xDEAD_DEAD
+                };
+                // Top of user stack: return addresses name the
+                // crashing function/binary offline (pc alone is
+                // often a wild jump into data).
+                let mut st = [0u32; 8];
+                for (i, s) in st.iter_mut().enumerate() {
+                    *s = self.mem.borrow().read_u32(self.r[13].wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
+                }
+                eprintln!("UND#{n} ins={} velho={velho:#x} pc={:#x} mm={:#x} insn={ins:#x} sp={:#x} lr={:#x} stk={st:#x?}", self.instrucoes, self.r[15], self.mem.borrow().mm_atual(), self.r[13], self.r[14]);
+            }
+        }
+        // UND-bank SP fallback (same root cause as IRQ/ABT/SVC:
+        // reset leaves it undefined; the kernel never programs it
+        // on a healthy boot because no UND ever fires). Private
+        // page (ABT 0xC8310000, SVC 0xC8320000).
+        if self.r[13] == 0 {
+            const PILHA_UND: u32 = 0xC833_0000;
+            const TAM_PILHA_UND: usize = 0x1000;
+            if self.mem.borrow().read_u32(PILHA_UND).is_err() {
+                let _ = self.mem.borrow_mut().map_zeroed("pilha_und", PILHA_UND, TAM_PILHA_UND);
+            }
+            self.r[13] = PILHA_UND.wrapping_add(TAM_PILHA_UND as u32);
+        }
+        self.spsr[5] = velho;
+        // Thumb-ness BEFORE the switch below clears T (lr formula
+        // depends on the faulting state, not the handler state).
+        let era_thumb = self.thumb();
+        // ARMv6 UND entry: mode UND, ARM state, I masked (A per spec
+        // untouched — our async aborts don't exist, and the guest
+        // UND path never observes it). Switch banks FIRST (like
+        // entra_aborto/entra_irq): writing r14 before the swap would
+        // be clobbered by the bank load.
+        self.troca_modo((velho & !(0x1F | T)) | 0x1B | 0x80);
+        // lr = fault+4 ARM / fault+2 Thumb (r15 sits AT the faulting
+        // instruction, unlike IRQ delivery where it has advanced).
+        self.r[14] = self.r[15].wrapping_add(if era_thumb { 2 } else { 4 });
+        // CP15 c1 (key 0x80) bit 13: high vectors.
+        let sctlr = self.cp15.iter().find(|(k, _)| *k == 0x80).map_or(0, |(_, v)| *v);
+        self.r[15] = (if sctlr & (1 << 13) != 0 { 0xFFFF_0000 } else { 0x0 }) | 0x04;
+    }
+
+    /// Whether the CPU is currently in USR mode (for the harness:
+    /// only user-mode faults are deliverable to the guest; kernel
+    /// faults always stop the run).
+    pub fn em_usuario(&self) -> bool {
+        self.cpsr & 0x1F == MODO_USUARIO
+    }
+
     /// Take a Linux syscall (SVC) exception for the `svc` at `r[15]`
     /// (which sits AT the faulting instruction): lr = next
     /// instruction (fault+4 ARM, fault+2 Thumb — the guest resumes
@@ -358,6 +538,101 @@ impl Interpretador {
                 let n = NSVC;
                 eprintln!("SVC#{n} ins={} velho={velho:#x} pc={:#x} r7={:#x} r0={:#x}", self.instrucoes, self.r[15], self.r[7], self.r[0]);
             }
+            // TEMP (Audio-init syscall watch): log every SVC in the
+            // system_server init window (cap 400) to find the
+            // setCapabilities/capset failure. Remove with CRASHOBJ.
+            static mut NSVCA: u32 = 0;
+            let f = crate::msm7201a::FATIA_ATUAL;
+            if (579_000..582_500).contains(&f) && NSVCA < 400 {
+                NSVCA += 1;
+                let n = NSVCA;
+                eprintln!("SVCA#{n} f={f} pc={:#x} r7={:#x} r0={:#x} r1={:#x} r2={:#x}", self.r[15], self.r[7], self.r[0], self.r[1], self.r[2]);
+                // TEMP (capset forensics): dump pointed-to structs for the
+                // identity/capability calls (the setCapabilities EPERM
+                // source): capset header/data, prctl args are values.
+                // Remove with CRASHOBJ.
+                if matches!(self.r[7], 0xb9 | 0xb8 | 0xac | 0xd5 | 0xd6 | 0xce) {
+                    let mb = self.mem.borrow();
+                    let mut h0 = [0u8; 16];
+                    let ok0 = mb.read(self.r[0], 16).map(|s| h0.copy_from_slice(s)).is_ok();
+                    let mut h1 = [0u8; 16];
+                    let ok1 = mb.read(self.r[1], 16).map(|s| h1.copy_from_slice(s)).is_ok();
+                    eprintln!("SVCARG#{n} r7={:#x} [r0]ok={ok0}={h0:02x?} [r1]ok={ok1}={h1:02x?}", self.r[7]);
+                }
+            }
+            // TEMP (failure attribution): snapshot regs when the guest
+            // writes a key failure line (EPERM / Missing classname /
+            // preload failure) so the caller is named, not just the
+            // message. Matches write()/writev() buffers; cap 8.
+            // Remove with CRASHOBJ.
+            if self.r[7] == 4 || self.r[7] == 146 {
+                static mut NLG: u32 = 0;
+                unsafe {
+                    if NLG < 8 {
+                        let mut achou = false;
+                        if self.r[7] == 4 {
+                            if let Ok(s) = self.mem.borrow().read(self.r[1], 96) {
+                                achou = s.windows(17).any(|w| {
+                                    w == b"Missing classname"
+                                        || w == b"Error setting cap"
+                                        || w == b"Failure preloadin"
+                                });
+                            }
+                        } else {
+                            // writev(fd, iov, iovcnt): scan first 4 chunks.
+                            for k in 0..4u32 {
+                                let mut iv = [0u8; 8];
+                                if self.mem.borrow().read(self.r[1].wrapping_add(k * 8), 8).map(|s| iv.copy_from_slice(s)).is_err() {
+                                    break;
+                                }
+                                let ptr = u32::from_le_bytes([iv[0], iv[1], iv[2], iv[3]]);
+                                let len = u32::from_le_bytes([iv[4], iv[5], iv[6], iv[7]]);
+                                if len == 0 || len > 512 {
+                                    continue;
+                                }
+                                if let Ok(s) = self.mem.borrow().read(ptr, len.min(96)) {
+                                    if s.windows(17).any(|w| {
+                                        w == b"Missing classname"
+                                            || w == b"Error setting cap"
+                                            || w == b"Failure preloadin"
+                                    }) {
+                                        achou = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if achou {
+                            NLG += 1;
+                            // Which message: re-read first chunk text for the tag.
+                            let mut tag = String::from("?");
+                            if let Ok(s2) = self.mem.borrow().read(self.r[1], 16) {
+                                if s2.windows(9).any(|w| w == b"Missing c") {
+                                    tag = String::from("missing-direct");
+                                }
+                            }
+                            if tag == "?" {
+                                // writev: dump chunk0 text (usually prio/tag).
+                                let mut iv0 = [0u8; 8];
+                                if self.mem.borrow().read(self.r[1], 8).map(|x| iv0.copy_from_slice(x)).is_ok() {
+                                    let p0 = u32::from_le_bytes([iv0[0], iv0[1], iv0[2], iv0[3]]);
+                                    let l0 = u32::from_le_bytes([iv0[4], iv0[5], iv0[6], iv0[7]]);
+                                    if l0 != 0 && l0 < 256 {
+                                        if let Ok(c0) = self.mem.borrow().read(p0, l0.min(64)) {
+                                            tag = format!("iov0={:02x?}", &c0[..]);
+                                        }
+                                    }
+                                }
+                            }
+                                                    // Native stack to name the caller chain
+                        // (liblog <- Log JNI <- dalvik bridge?).
+                        let mut nstk = [0u8; 128];
+                        let okn = self.mem.borrow().read(self.r[13], 128).map(|s| nstk.copy_from_slice(s)).is_ok();
+                        eprintln!("LOGWR#{} {} f={} pc={:#x} lr={:#x} r7={:#x} r0={:#x} r1={:#x} r2={:#x} sp={:#x} mm={:#x} nok={okn} nstk={nstk:02x?}", unsafe { NLG }, tag, unsafe { crate::msm7201a::FATIA_ATUAL }, self.r[15], self.r[14], self.r[7], self.r[0], self.r[1], self.r[2], self.r[13], self.mem.borrow().mm_atual());
+                        }
+                    }
+                }
+            }
         }
         // TEMP (exit-class watch): init dies via do_exit (no
         // segfault) — catch exit/exit_group (r7=1/248), execve
@@ -373,17 +648,295 @@ impl Interpretador {
                 if NEX < 40 {
                     NEX += 1;
                     let ti = self.r[13] & !0x1FFF;
-                    let task = self.mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
+                    let task = self.mem.borrow().read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
                     let mut extra = String::new();
                     if self.r[7] == 11 {
-                        if let Ok(s) = self.mem.read(self.r[0], 64) {
-                            let z = s.iter().position(|&b| b == 0).unwrap_or(s.len());
-                            extra = format!(" path={:?}", String::from_utf8_lossy(&s[..z]));
-                        } else {
+                        // Chunked read: a single 64 B read fails at
+                        // region edges and misreports valid paths as
+                        // <unmapped> (same lesson as formata_printk).
+                        let mut nm = Vec::new();
+                        let mut off = 0u32;
+                        loop {
+                            match self.mem.borrow().read(self.r[0].wrapping_add(off), 16) {
+                                Ok(s) => {
+                                    if let Some(z) = s.iter().position(|&b| b == 0) {
+                                        nm.extend_from_slice(&s[..z]);
+                                        break;
+                                    }
+                                    nm.extend_from_slice(s);
+                                    off += 16;
+                                    if nm.len() >= 64 {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        if nm.is_empty() {
                             extra = String::from(" path=<unmapped>");
+                        } else {
+                            extra = format!(" path={:?}", String::from_utf8_lossy(&nm));
                         }
                     }
                     eprintln!("EXITCAL f={} r7={:#x} r0={:#x} r1={:#x} task={task:#x} lr={:#x} pc={:#x} mode={:#x}{extra}", self.instrucoes, self.r[7], self.r[0], self.r[1], self.r[14], self.r[15], self.cpsr & 0x1F);
+                }
+            }
+        }
+        // TEMP (block watch): where userspace parks when the boot
+        // goes quiet — futex (240), nanosleep (162), poll (168),
+        // select (142), epoll_wait (287), wait4 (114). Gated to
+        // late boot (the stuck state forms past ~1.5B instrs; early
+        // boot would burn any cap on linker futexes). Cap 30/type.
+        // Remove once the zygote stall is named.
+        {
+            let r7 = self.r[7];
+            let qual = match r7 {
+                240 | 162 | 168 | 142 | 287 | 114 => Some(r7),
+                _ => None,
+            };
+            if let Some(q) = qual {
+                if self.instrucoes > 1_500_000_000 {
+                    static mut NBL: [u32; 6] = [0; 6];
+                    let slot = match q {
+                        240 => 0,
+                        162 => 1,
+                        168 => 2,
+                        142 => 3,
+                        287 => 4,
+                        _ => 5,
+                    };
+                    unsafe {
+                        if NBL[slot] < 30 {
+                            NBL[slot] += 1;
+                            let mm = self.mem.borrow().mm_atual();
+                            // nanosleep req / futex timeout hint.
+                            let mut xtra = String::new();
+                            if q == 162 {
+                                if let Ok(s) = self.mem.borrow().read(self.r[0], 8) {
+                                    let sec = u32::from_le_bytes([s[0], s[1], s[2], s[3]]);
+                                    let ns = u32::from_le_bytes([s[4], s[5], s[6], s[7]]);
+                                    xtra = format!(" {sec}.{ns:09}");
+                                }
+                            }
+                            eprintln!("BLOQUEIO f={} r7={q:#x} r0={:#x} r1={:#x} r2={:#x} mm={mm:#x}{xtra}", self.instrucoes, self.r[0], self.r[1], self.r[2]);
+                        }
+                    }
+                }
+            }
+        }
+        // TEMP (mmap watch, r7=192/mmap2): log addr/len/prot/flags/
+        // fd/offset to find the fb0 mapping (init mmaps the smem
+        // after opening /dev/graphics/fb0; the mapping's (mm, va,
+        // len) is what the host presenter snapshots). Cap 100.
+        // Remove once the presenter tracks the mapping itself.
+        if self.r[7] == 192 {
+            static mut NMM: u32 = 0;
+            unsafe {
+                if NMM < 100 {
+                    NMM += 1;
+                    let n = NMM;
+                    eprintln!("MMAP#{n} f={} mm={:#x} addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}", self.instrucoes, self.mem.borrow().mm_atual(), self.r[0], self.r[1], self.r[2], self.r[3], self.r[4], self.r[5]);
+                }
+            }
+            // TEMP (stale-alias carve): the SPL section-table alias
+            // VA 0x80000000 x64 (`ram_banco1` in the harness) is a
+            // flat-model static region that outlives the handoff it
+            // exists for. It shadows every later guest user mapping
+            // in that bank with stale zeros (proven: libOmxCore's
+            // load at 0x80000000 reads zeros, si setup parses
+            // e_phoff=0/e_phnum=0, link_image finds no DYNAMIC and
+            // tears the load down). Carve the requested overlap out
+            // of the shadow so the guest's own mapping wins and
+            // later faults serve file content (same precedent as
+            // `desmapeia_intervalo`'s doc comment). Runs at most
+            // once per overlapping mmap; the kernel never maps here
+            // itself (user range), so only genuine user mappings
+            // trigger it. Canonical defs live in msm7201a.rs.
+            const SOMBRA_BASE: u32 = 0x8000_0000;
+            const SOMBRA_FIM: u32 = 0x8400_0000;
+            {
+                let base = self.r[0];
+                let fim = base.saturating_add(self.r[1]);
+                if base < SOMBRA_FIM && fim > SOMBRA_BASE && fim > base {
+                    let ini = base.max(SOMBRA_BASE);
+                    let mut mem = self.mem.borrow_mut();
+                    mem.desmapeia_intervalo(ini, (fim.min(SOMBRA_FIM) - ini) as usize);
+                }
+            }
+            // TEMP (linker load-stage watch): round-1 (mediaserver,
+            // ~562M insns) loads libOmxCore fine, round-2 (zygote
+            // preload, ~656M) fails after a successful open — with
+            // mapping activity but a stale "Cannot find library".
+            // Log every mmap in both windows to compare the segment
+            // maps (fd 3 vs fd 14 stand out). Open-ended on the
+            // right: the libmedia_jni self-map lands past 658M.
+            // Cap 250. Remove with OPENRET once the stage is named.
+            static mut NMM2: u32 = 0;
+            unsafe {
+                let f = self.instrucoes;
+                if NMM2 < 250 && ((562_000_000..563_500_000).contains(&f) || f >= 656_300_000) {
+                    NMM2 += 1;
+                    let n = NMM2;
+                    eprintln!("MMAP2#{n} f={f} mm={:#x} addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}", self.mem.borrow().mm_atual(), self.r[0], self.r[1], self.r[2], self.r[3], self.r[4], self.r[5]);
+                }
+            }
+        }
+        // TEMP (linker load-stage watch): same windows, log read()
+        // args (fd/count) — a missing header read on fd 14 vs fd 3
+        // separates fail-before-read from fail-after-read. Open
+        // right end like MMAP2. Cap 400. Remove with MMAP2/OPENRET.
+        if self.r[7] == 3 {
+            static mut NRD2: u32 = 0;
+            unsafe {
+                let f = self.instrucoes;
+                if NRD2 < 400 && ((562_000_000..563_500_000).contains(&f) || f >= 656_300_000) {
+                    NRD2 += 1;
+                    let n = NRD2;
+                    eprintln!("READ2#{n} f={f} fd={:#x} len={:#x}", self.r[0], self.r[2]);
+                }
+            }
+        }
+        // TEMP (guest VMA invalidation): our host regions shadow
+        // guest remaps — a munmap/MAP_FIXED/mremap that frees VA
+        // must drop our pages there, else the next touch reads
+        // stale bytes with no fault (proven live: apk FileMap over
+        // a zero-filled 0x40000000). munmap + MAP_FIXED drop
+        // eagerly (address known at entry); addr=0 mmaps resolve
+        // at return (fresh VA, no stale to drop — the fault path
+        // serves them). brk deliberately excluded (heap reuse must
+        // keep content). Log cap 40. Remove with CRASHOBJ.
+        if self.r[7] == 91 {
+            let (base, len) = (self.r[0], self.r[1]);
+            if len != 0 && base.checked_add(len).is_some_and(|e| e > base) {
+                self.mem.borrow_mut().desmapeia_intervalo(base, len as usize);
+                static mut NVI: u32 = 0;
+                unsafe {
+                    if NVI < 40 {
+                        NVI += 1;
+                        let n = NVI;
+                        eprintln!("VMAINV#{n} f={} mm={:#x} op=munmap base={base:#x} len={len:#x}", self.instrucoes, self.mem.borrow().mm_atual());
+                    }
+                }
+            }
+        }
+        if self.r[7] == 192 && self.r[0] != 0 && (self.r[3] & 0x10) != 0 {
+            let (base, len) = (self.r[0], self.r[1]);
+            if len != 0 && base.checked_add(len).is_some_and(|e| e > base) {
+                self.mem.borrow_mut().desmapeia_intervalo(base, len as usize);
+                static mut NVF: u32 = 0;
+                unsafe {
+                    if NVF < 40 {
+                        NVF += 1;
+                        let n = NVF;
+                        eprintln!("VMAINV#{n} f={} mm={:#x} op=mapfixed base={base:#x} len={len:#x}", self.instrucoes, self.mem.borrow().mm_atual());
+                    }
+                }
+            }
+        }
+        if self.r[7] == 163 {
+            let (base, len) = (self.r[0], self.r[1]);
+            if len != 0 && base.checked_add(len).is_some_and(|e| e > base) {
+                self.mem.borrow_mut().desmapeia_intervalo(base, len as usize);
+                static mut NVR: u32 = 0;
+                unsafe {
+                    if NVR < 40 {
+                        NVR += 1;
+                        let n = NVR;
+                        eprintln!("VMAINV#{n} f={} mm={:#x} op=mremap base={base:#x} len={len:#x}", self.instrucoes, self.mem.borrow().mm_atual());
+                    }
+                }
+            }
+        }
+        // TEMP (madvise DONTNEED invalidation): dlmalloc returns freed
+        // spans via madvise(MADV_DONTNEED) — the kernel discards the
+        // pages (fresh zeros on next touch). Our host regions would
+        // otherwise keep serving the stale pre-discard bytes.
+        // Drop like munmap. r7=0xDC=220 ARM EABI (verified against
+        // bionic's own wrapper; the earlier r7==219 guess was wrong
+        // and silently matched nothing). r0=addr, r1=len, r2=advice
+        // (4 = DONTNEED). Other advices only log. Cap 40.
+        // Remove with CRASHOBJ.
+        if self.r[7] == 0xDC {
+            let (base, len, adv) = (self.r[0], self.r[1], self.r[2]);
+            if adv == 4 && len != 0 && base.checked_add(len).is_some_and(|e| e > base) {
+                self.mem.borrow_mut().desmapeia_intervalo(base, len as usize);
+            }
+            static mut NVM: u32 = 0;
+            unsafe {
+                if NVM < 40 {
+                    NVM += 1;
+                    let n = NVM;
+                    eprintln!("VMAINV#{n} f={} mm={:#x} op=madvise adv={adv} base={base:#x} len={len:#x}", self.instrucoes, self.mem.borrow().mm_atual());
+                }
+            }
+        }
+        // TEMP (SVC census): log r7 numbers in/near the unmapped
+        // range to name unhandled syscalls if madvise never fires
+        // above (a wrong number leaves discards invisible and stale
+        // pages get re-served as zeros). Cap 60. Remove with
+        // CRASHOBJ.
+        if (200..260).contains(&self.r[7]) && self.r[7] != 219 {
+            static mut NSC: u32 = 0;
+            unsafe {
+                if NSC < 60 {
+                    NSC += 1;
+                    let n = NSC;
+                    eprintln!("SVCC#{n} f={} r7={:#x} r0={:#x} r1={:#x} r2={:#x} r3={:#x}", self.instrucoes, self.r[7], self.r[0], self.r[1], self.r[2], self.r[3]);
+                }
+            }
+        }
+        // TEMP (brk lifecycle watch + shrink invalidation): brk
+        // shrink+regrow without a drop resurrects freed heap bytes
+        // via the preservation overlay (stale pointers -> wild
+        // libsgl head). Drop [new,old) on shrink (new!=0, new<old);
+        // grow needs no drop. Cap 40. Remove with CRASHOBJ.
+        if self.r[7] == 45 {
+            static mut NBK: u32 = 0;
+            static mut OLD_BRK: u32 = 0;
+            unsafe {
+                let novo = self.r[0];
+                if OLD_BRK != 0 && novo != 0 && novo < OLD_BRK {
+                    let velho = OLD_BRK;
+                    self.mem.borrow_mut().desmapeia_intervalo(novo, (velho - novo) as usize);
+                    if NBK < 40 {
+                        NBK += 1;
+                        eprintln!("BRKSHRINK ins={} [{:#x},{:#x})", self.instrucoes, novo, velho);
+                    }
+                } else if NBK < 20 {
+                    NBK += 1;
+                    let n = NBK;
+                    eprintln!("BRK#{n} ins={} addr={:#x}", self.instrucoes, novo);
+                }
+                if novo != 0 {
+                    OLD_BRK = novo;
+                }
+            }
+        }
+        // TEMP (linker failure-cleanup watch): if link_image fails
+        // after mapping, old bionic munmaps the reserve and closes
+        // the fd. A munmap of the top reserve (0xab300000/0x7000)
+        // is the smoking gun for link-vs-init failure and pins the
+        // failure instant. Same windows as MMAP2. Caps 40/80.
+        // Remove with MMAP2/OPENRET.
+        if self.r[7] == 91 {
+            static mut NMU2: u32 = 0;
+            unsafe {
+                let f = self.instrucoes;
+                if NMU2 < 40 && ((562_000_000..563_500_000).contains(&f) || f >= 656_300_000) {
+                    NMU2 += 1;
+                    let n = NMU2;
+                    eprintln!("MUNMAP2#{n} f={f} mm={:#x} addr={:#x} len={:#x} lr={:#x}", self.mem.borrow().mm_atual(), self.r[0], self.r[1], self.r[14]);
+                }
+            }
+        }
+        if self.r[7] == 6 {
+            static mut NCL2: u32 = 0;
+            unsafe {
+                let f = self.instrucoes;
+                if NCL2 < 80 && ((562_000_000..563_500_000).contains(&f) || f >= 656_300_000) {
+                    NCL2 += 1;
+                    let n = NCL2;
+                    eprintln!("CLOSE2#{n} f={f} fd={:#x}", self.r[0]);
                 }
             }
         }
@@ -399,7 +952,7 @@ impl Interpretador {
                     NOP += 1;
                     let p = self.r[0];
                     let nm = if (0x1000..0xC000_0000).contains(&p) {
-                        match self.mem.read(p, 64) {
+                        match self.mem.borrow().read(p, 64) {
                             Ok(s) => {
                                 let z = s.iter().position(|&b| b == 0).unwrap_or(s.len());
                                 format!("{:?}", String::from_utf8_lossy(&s[..z]))
@@ -413,14 +966,22 @@ impl Interpretador {
                 }
             }
         }
+        // Execve entry (r7==11): bump the exec generation so
+        // post-exec user touches re-resolve from the new page tables
+        // instead of reusing stale regions. (Does NOT carve: the new
+        // image's argv/envp still live in the old user pages until
+        // the loader replaces them — carving here once starved an
+        // execve of its own arguments.) Runs before the guest handler.
+        if self.r[7] == 11 {
+            self.mem.borrow_mut().bump_geracao();
+        }
         // SVC-bank SP fallback (same root cause as IRQ/ABT: reset
         // leaves it undefined; the kernel programs it in cpu_init).
         // Private page; the kernel's own setup overwrites this later.
-        if self.r[13] == 0 {
-            const PILHA_SVC: u32 = 0xC832_0000;
+        if self.r[13] == 0 {            const PILHA_SVC: u32 = 0xC832_0000;
             const TAM_PILHA_SVC: usize = 0x1000;
-            if self.mem.read_u32(PILHA_SVC).is_err() {
-                let _ = self.mem.map_zeroed("pilha_svc", PILHA_SVC, TAM_PILHA_SVC);
+            if self.mem.borrow().read_u32(PILHA_SVC).is_err() {
+                let _ = self.mem.borrow_mut().map_zeroed("pilha_svc", PILHA_SVC, TAM_PILHA_SVC);
             }
             self.r[13] = PILHA_SVC.wrapping_add(TAM_PILHA_SVC as u32);
         }
@@ -482,8 +1043,8 @@ impl Interpretador {
         if self.r[13] == 0 {
             const PILHA_IRQ: u32 = 0xC830_0000;
             const TAM_PILHA_IRQ: usize = 0x1000;
-            if self.mem.read_u32(PILHA_IRQ).is_err() {
-                let _ = self.mem.map_zeroed("pilha_irq", PILHA_IRQ, TAM_PILHA_IRQ);
+            if self.mem.borrow().read_u32(PILHA_IRQ).is_err() {
+                let _ = self.mem.borrow_mut().map_zeroed("pilha_irq", PILHA_IRQ, TAM_PILHA_IRQ);
             }
             self.r[13] = PILHA_IRQ.wrapping_add(TAM_PILHA_IRQ as u32);
         }
@@ -528,6 +1089,10 @@ impl Interpretador {
         addr: u32,
         gancho: impl FnMut(&mut GuestMemory, &mut [u32; 16]) + 'static,
     ) {
+        // TEMP (trap audit): libdvm-address traps never fire while
+        // 0x11020 traps do — verify arming actually lands. Remove
+        // with CRASHOBJ.
+        eprintln!("ARMA trap={addr:#x}");
         if let Some(slot) = self.armadilhas_mem.iter_mut().find(|(a, _)| *a == addr) {
             slot.1 = Box::new(gancho);
         } else {
@@ -537,12 +1102,35 @@ impl Interpretador {
         }
     }
 
+    /// Serving-trap count (perf audit: the run loop binary-searches
+    /// this table on every instruction).
+    pub fn num_armadilhas(&self) -> usize {
+        self.armadilhas_mem.len()
+    }
+
     /// Mark timer/IRQ state dirty: recheck the line at the next
     /// UNMASKED loop top. Called by the harness per-slice plant when
     /// COUNT catches up (STATUS 0->1); es_mem sets the flag directly
     /// for MMIO writes.
     pub fn marca_timer_sujo(&mut self) {
         self.timer_sujo = true;
+    }
+
+    /// CP15 store as a whole (dual-backend sync: the wrapper copies the
+    /// active backend's table to the idle one on every switch).
+    pub fn cp15_vec(&self) -> Vec<(u32, u32)> {
+        self.cp15.clone()
+    }
+
+    /// Replace the CP15 store wholesale (dual-backend sync counterpart).
+    pub fn carrega_cp15(&mut self, v: Vec<(u32, u32)>) {
+        self.cp15 = v;
+    }
+
+    /// Clear a stale LDREX reservation (dual-backend switch: a reservation
+    /// never survives a backend change — the STREX retry path handles it).
+    pub fn limpa_exclusivo(&mut self) {
+        self.exclusivo = None;
     }
 
     /// Read a cached CP15 register by key (same key layout as the
@@ -561,6 +1149,16 @@ impl Interpretador {
 
     fn thumb(&self) -> bool {
         self.cpsr & T != 0
+    }
+
+    /// TEMP (linker Thumb-state): force Thumb mode to retry a pc that
+    /// is proven Thumb code but faulted as ARM UND (0xB0000854 =
+    /// `str r7,[r6,#0x7c]`, caller Thumb via BL). The mode flip is
+    /// lost on some ARM->Thumb return path; re-executing in Thumb
+    /// unblocks boot. Narrow to the proven pc; remove once the
+    /// underlying bx/svc-return bug is found. Remove with CRASHOBJ.
+    pub fn forca_thumb(&mut self) {
+        self.cpsr |= T;
     }
 
     fn flag_c(&self) -> bool {
@@ -634,14 +1232,14 @@ impl Interpretador {
         if (API_BASE..API_BASE.saturating_add(API_SIZE)).contains(&addr) {
             return Err(StopReason::ApiCall { addr });
         }
-        let bytes = self
-            .mem
-            .read(addr, len)
+        let mem = self.mem.borrow();
+        let bytes = mem
+                        .read(addr, len)
             .map_err(|_| StopReason::MemoryFault { addr, pc: addr })?;
         // `GuestMemory::executavel` requires four bytes. A Thumb at the end of the region fits in
         // two and would be refused; the right question is whether the region the read found allows
         // execution (via `busca_permitida`: binary + MRU, no scan).
-        if !self.mem.busca_permitida(addr, len) {
+        if !self.mem.borrow().busca_permitida(addr, len) {
             return Err(StopReason::MemoryFault { addr, pc: addr });
         }
         Ok(match len {
@@ -651,9 +1249,9 @@ impl Interpretador {
     }
 
     fn le_mem(&self, addr: u32, len: u32, pc: u32) -> Result<u32, StopReason> {
-        let bytes = self
-            .mem
-            .read(addr, len)
+        let mem = self.mem.borrow();
+        let bytes = mem
+                        .read(addr, len)
             .map_err(|_| StopReason::MemoryFault { addr, pc })?;
         Ok(match len {
             1 => u32::from(bytes[0]),
@@ -667,10 +1265,112 @@ impl Interpretador {
         // Thumb-push rollback fix: the guard lifecycle is named
         // (seeder 0x1277C, copy 0xA5FA, check 0xA6F4) and the check
         // passes genuinely. This hot path stays clean.
-        // TEMP (GOT-slot watch 0x1A83C): who zeroes the GOT entry the
-        // 0x1A834 ldr reads (file has 0x15119, guest reads 0)? Any
-        // 4-byte store to [0x1A838..0x1A844) logs pc + value. Cap 8.
-        // Remove once the zeroing writer is named.
+        // TEMP (write watchpoint, harness-armed): log every store
+        // overlapping `vigia` with PC + first 4 bytes. Names the
+        // writer of the string-headed slot (zygote crash). Cap 2000
+        // (raised for the Dalvik-stack poison hunt; normally 30).
+        // Remove with CRASHOBJ.
+        if let Some((base, len)) = self.mem.borrow().vigia {
+            let fim_w = base.wrapping_add(len);
+            let fim_s = addr.wrapping_add(dados.len() as u32);
+            if (addr as u64) < fim_w as u64 && (base as u64) < fim_s as u64 {
+                static mut NW: u32 = 0;
+                unsafe {
+                    // TEMP (poison-origin hunt): when ANY watched write
+                    // carries 0xe4280000 (the mterp IGET wild object),
+                    // dump mterp regs + fp words. Own cap (outside the
+                    // WATCH# budget, which exhausts on whole-page
+                    // watches). Remove with CRASHOBJ.
+                    static mut NPW: u32 = 0;
+                    if dados.len() == 4
+                        && (dados == [0x00, 0x00, 0x28, 0xe4]
+                            || dados == [0xa0, 0x8b, 0xaa, 0x41])
+                        && NPW < 20 {
+                        NPW += 1;
+                        let mb = self.mem.borrow();
+                        let mut wfp = [0u8; 32];
+                        let okfp = mb.read(self.r[5], 32).map(|s| wfp.copy_from_slice(s)).is_ok();
+                        let mut wobj = [0u8; 32];
+                        let oko = mb.read(self.r[3], 32).map(|s| wobj.copy_from_slice(s)).is_ok();
+                        // Dex bytecode around rPC (r4 points past the
+                        // current 2-unit insn: the IGET should be at
+                        // r4-4). If it doesn't decode as the expected
+                        // IGET (vA=dest idx, offset=r1), rPC is stale.
+                        let mut wdex = [0u8; 16];
+                        let okd = mb.read(self.r[4].wrapping_sub(8), 16).map(|s| wdex.copy_from_slice(s)).is_ok();
+                        eprintln!("POISONWR#{} ins={} f={} pc={pc:#x} addr={addr:#x} r0={:08x} r1={:08x} r2={:08x} r3={:08x} r4={:08x} r5={:08x} r6={:08x} r8={:08x} lr={:08x} fpok={okfp} fpw={wfp:02x?} objok={oko} obj={wobj:02x?} dexok={okd} dex={wdex:02x?}", unsafe { NPW }, self.instrucoes, unsafe { crate::msm7201a::FATIA_ATUAL }, self.r[0], self.r[1], self.r[2], self.r[3], self.r[4], self.r[5], self.r[6], self.r[8], self.r[14]);
+                    }
+                    if NW < 2000 {
+                        NW += 1;
+                        let n = NW;
+                        let mut hb = [0u8; 4];
+                        let m = dados.len().min(4);
+                        hb[..m].copy_from_slice(&dados[..m]);
+                        eprintln!("WATCH#{n} ins={} f={} pc={pc:#x} addr={addr:#x} len={:#x} data={hb:02x?}", self.instrucoes, unsafe { crate::msm7201a::FATIA_ATUAL }, dados.len());
+                    }
+                }
+            }
+        }
+        // TEMP (VIC write watch [0xE0000000,0xE0000040)): the VIC
+        // enable/clear registers live here; log addr + value to
+        // learn which word gates IRQ16 (mddi) — vic_nivel currently
+        // reads +0x30, which may be the wrong word for line 16.
+        // Cap 30. Remove once IRQ16 delivers.
+        if dados.len() == 4 && (0xE000_0000..0xE000_0040).contains(&addr) {
+            static mut NVC: u32 = 0;
+            unsafe {
+                if NVC < 30 {
+                    NVC += 1;
+                    let n = NVC;
+                    let val = u32::from_le_bytes([dados[0], dados[1], dados[2], dados[3]]);
+                    eprintln!("VICWR#{n} ins={} pc={pc:#x} addr={addr:#x} val={val:#x}", self.instrucoes);
+                }
+            }
+        }
+        // host reset writes ~15 control regs then polls INT/STAT;
+        // log addr + value to confirm the VA and the offsets the
+        // driver actually uses (vmlinux says CMD+0, INT+0x18,
+        // STAT+0x28, VERSION+0x8C). Doubles as the IRQ16 edge:
+        // CMD writes raise the pending flag (doorbell rung), INT
+        // writes (+0x18, the handler's ack) lower it — vic_nivel
+        // raises line 16 while outstanding so the real IRQ handler
+        // runs and completes the waiters. Cap 30. Remove once the
+        // client handshake is emulated for real.
+        if dados.len() == 4 && (0xE000_B000..0xE000_C000).contains(&addr) {
+            static mut NMD: u32 = 0;
+            unsafe {
+                if addr == 0xE000_B000 {
+                    MDDI_IRQ_PENDENTE = true;
+                } else if addr == 0xE000_B018 {
+                    MDDI_IRQ_PENDENTE = false;
+                }
+                if NMD < 30 {
+                    NMD += 1;
+                    let n = NMD;
+                    let val = u32::from_le_bytes([dados[0], dados[1], dados[2], dados[3]]);
+                    eprintln!("MDDIWR#{n} ins={} pc={pc:#x} addr={addr:#x} val={val:#x}", self.instrucoes);
+                }
+            }
+        }
+        // holds file bytes to 0xA1FC then zeros (file has code to
+        // 0xB000), NOP-sledding the fault pass into 0xB008 with a
+        // garbage r3. A guest store zeroed it (user text maps
+        // writable; hardware would SEGV where we absorb) — any
+        // 4-byte store in range logs pc + addr + value. Cap 20.
+        // Zero hits + still-zeroed page = host-side writer instead
+        // (seed/serve/fault-in/mirror), different hunt. Remove once
+        // the storer is named.
+        if dados.len() == 4 && (0xA000..0xB000).contains(&addr) {
+            static mut NTW: u32 = 0;
+            unsafe {
+                if NTW < 20 {
+                    NTW += 1;
+                    let n = NTW;
+                    let val = u32::from_le_bytes([dados[0], dados[1], dados[2], dados[3]]);
+                    eprintln!("TEXTWR#{n} ins={} mm={:#x} pc={pc:#x} addr={addr:#x} val={val:#x} r0={:#x} r1={:#x} lr={:#x}", self.instrucoes, self.mem.borrow().mm_atual(), self.r[0], self.r[1], self.r[14]);
+                }
+            }
+        }
         // TEMP (kuser fill watch [0xFFFF0F00,0xFFFF1000)): init reads
         // [0xFFFF0FF0] (pool 0xFFFF0FF0 in the 0x1259c getter) and gets
         // 0, so *ptr=0 and r0=8 faults. The kernel should have copied
@@ -688,6 +1388,10 @@ impl Interpretador {
                 }
             }
         }
+        // TEMP (GOT-slot watch 0x1A83C): who zeroes the GOT entry the
+        // 0x1A834 ldr reads (file has 0x15119, guest reads 0)? Any
+        // 4-byte store to [0x1A838..0x1A844) logs pc + value. Cap 8.
+        // Remove once the zeroing writer is named.
         if dados.len() == 4 && (0x1A838..0x1A844).contains(&addr) {
             static mut NGW: u32 = 0;
             unsafe {
@@ -714,9 +1418,13 @@ impl Interpretador {
                 _ => None,
             };
             if let Some((reg_set, e_set)) = alvo {
-                if let Ok(atual) = self.mem.read_u32(reg_set) {
+                // Read first, guard dropped at statement end: the body
+                // below takes `borrow_mut`, which would panic against a
+                // guard held open by an `if let` scrutinee.
+                let atual = self.mem.borrow().read_u32(reg_set);
+                if let Ok(atual) = atual {
                     let novo = if e_set { atual | v } else { atual & !v };
-                    let _ = self.mem.write_u32(reg_set, novo);
+                    let _ = self.mem.borrow_mut().write_u32(reg_set, novo);
                 }
                 if e_set {
                     self.exclusivo = None;
@@ -750,23 +1458,23 @@ impl Interpretador {
             let v = u32::from_le_bytes([dados[0], dados[1], dados[2], dados[3]]);
             // Shadow EN (0x30/0x34 bank) with THIS write applied.
             let r = |m: &GuestMemory, a: u32| m.read_u32(a).unwrap_or(0);
-            let mut en = r(&self.mem, 0xE000_0030);
+            let mut en = r(&*self.mem.borrow(), 0xE000_0030);
             match addr {
                 0xE000_0030 => en |= v,
                 0xE000_0020 => en &= !v,
                 _ => {}
             }
-            let conta = if addr == 0xE000_1004 { v } else { r(&self.mem, 0xE000_1004) };
-            let alvo = if addr == 0xE000_1000 { v } else { r(&self.mem, 0xE000_1000) };
-            let conta_d = if addr == 0xE000_1014 { v } else { r(&self.mem, 0xE000_1014) };
-            let alvo_d = if addr == 0xE000_1010 { v } else { r(&self.mem, 0xE000_1010) };
-            let gate = r(&self.mem, 0xC02A_43EC) != 0;
-            let st = r(&self.mem, 0xE000_0080);
+            let conta = if addr == 0xE000_1004 { v } else { r(&*self.mem.borrow(), 0xE000_1004) };
+            let alvo = if addr == 0xE000_1000 { v } else { r(&*self.mem.borrow(), 0xE000_1000) };
+            let conta_d = if addr == 0xE000_1014 { v } else { r(&*self.mem.borrow(), 0xE000_1014) };
+            let alvo_d = if addr == 0xE000_1010 { v } else { r(&*self.mem.borrow(), 0xE000_1010) };
+            let gate = r(&*self.mem.borrow(), 0xC02A_43EC) != 0;
+            let st = r(&*self.mem.borrow(), 0xE000_0080);
             // Unprogrammed MATCH reads all-ones: never pending.
             let p7 = conta >= alvo && alvo != u32::MAX && en & 0x80 != 0 && gate;
             let p8 = conta_d >= alvo_d && alvo_d != u32::MAX && en & 0x100 != 0 && gate;
             let vic = (if p7 { 0x80 } else { 0 }) | (if p8 { 0x100 } else { 0 });
-            let _ = self.mem.write_u32(0xE000_0000, vic);
+            let _ = self.mem.borrow_mut().write_u32(0xE000_0000, vic);
             let vect = if p7 {
                 7
             } else if p8 {
@@ -774,9 +1482,9 @@ impl Interpretador {
             } else {
                 0xFFFF_FFFF
             };
-            let _ = self.mem.write_u32(0xE000_00D0, vect);
-            let _ = self.mem.write_u32(0xE000_00D4, vect);
-            let _ = self.mem.write_u32(0xE000_0080, st & !0x180 | vic & 0x180);
+            let _ = self.mem.borrow_mut().write_u32(0xE000_00D0, vect);
+            let _ = self.mem.borrow_mut().write_u32(0xE000_00D4, vect);
+            let _ = self.mem.borrow_mut().write_u32(0xE000_0080, st & !0x180 | vic & 0x180);
         }
         // TEMP (MATCH writers, gated ins > 166M ≈ f 83k, cap 30):
         // the 1.65s wall has STATUS stuck while wake advances —
@@ -866,9 +1574,8 @@ impl Interpretador {
                     v.copy_from_slice(&dados[..dados.len().min(4)]);
                     let mut f = vec![0u8; 48];
                     let base = pc.wrapping_sub(32) & !3;
-                    let okf = self
-                        .mem
-                        .read(base, 48)
+                    let okf = self.mem.borrow()
+                                                .read(base, 48)
                         .map(|s| f.copy_from_slice(s))
                         .is_ok();
                     eprintln!(
@@ -880,7 +1587,7 @@ impl Interpretador {
                 }
             }
         }
-        self.mem
+        self.mem.borrow_mut()
             .write(addr, dados)
             .map_err(|_| StopReason::MemoryFault { addr, pc })?;
         self.exclusivo = None;
@@ -1003,7 +1710,7 @@ impl Interpretador {
                 if mascara & 0x80 != 0 && self.cpsr & 0x80 == 0 {
                     static mut NCPSD: u32 = 0;
                     unsafe {
-                        if self.instrucoes >= 245_000_000 && NCPSD < 2000 {
+                        if self.instrucoes >= 245_000_000 && NCPSD < 100 {
                             NCPSD += 1;
                             let n = NCPSD;
                             eprintln!("CPSID#{n} ins={} pc={pc:#x} mode={mode:#x}", self.instrucoes, pc = pc, mode = self.cpsr & 0x1F);
@@ -1016,11 +1723,11 @@ impl Interpretador {
                 // Genuine I 1->0 only (FIQ-only cps must not count).
                 let limpava = mascara & 0x80 != 0 && self.cpsr & 0x80 != 0;
                 // TEMP (I-clear hunt): log every cps that clears I
-                // (guest enable). Cap 2000, gated past the wall.
+                // (guest enable). Cap 100, gated past the wall.
                 if limpava {
                     static mut NCPSE: u32 = 0;
                     unsafe {
-                        if self.instrucoes >= 245_000_000 && NCPSE < 2000 {
+                        if self.instrucoes >= 245_000_000 && NCPSE < 100 {
                             NCPSE += 1;
                             let n = NCPSE;
                             eprintln!("CPSIE#{n} ins={} pc={pc:#x} mode={mode:#x}", self.instrucoes, pc = pc, mode = self.cpsr & 0x1F);
@@ -1094,7 +1801,7 @@ impl Interpretador {
             // mode can't happen here — this arm only fires in USR.)
             let alto = self.cp15.iter().find(|(k, _)| *k == 0x80).map_or(0, |(_, v)| *v) & (1 << 13) != 0;
             let vet = if alto { 0xFFFF_0008 } else { 0x08 };
-            let w = self.mem.read_u32(vet).unwrap_or(0);
+            let w = self.mem.borrow().read_u32(vet).unwrap_or(0);
             let forma = (w & 0xFFFF_F000 == 0xE59F_F000)
                 || (w & 0xFF00_0000 == 0xEA00_0000);
             if !forma {
@@ -1206,8 +1913,13 @@ impl Interpretador {
     }
 
     fn arm_dsp_mul(&mut self, instr: u32, pc: u32) -> Result<bool, StopReason> {
-        let rd = (instr >> 12) & 0xF;
-        let rn = self.le_reg((instr >> 16) & 0xF, pc, 0);
+        // Rd = bits[19:16], Rn (accumulator) = bits[15:12] — same
+        // layout as arm_mul (MUL Rd,Rm,Rs). PROVEN live: smulbb
+        // lr,r2,r3 = 0xE16E0382 has Rd=0xE in bits[19:16]; the old
+        // code read Rd from bits[15:12] (=0x0) and wrote r0 instead
+        // of lr, leaving a stale bl return in lr -> wild libsgl head.
+        let rd = (instr >> 16) & 0xF;
+        let rn = self.le_reg((instr >> 12) & 0xF, pc, 0);
         let rs = self.le_reg((instr >> 8) & 0xF, pc, 0);
         let rm = self.le_reg(instr & 0xF, pc, 0);
         let x = (instr >> 5) & 1 != 0;
@@ -1726,6 +2438,24 @@ impl Interpretador {
             match self.cp15.iter_mut().find(|(k, _)| *k == chave) {
                 Some(slot) => slot.1 = valor,
                 None => self.cp15.push((chave, valor)),
+            }
+            // TTBR0 (key 0x100: c2,c0,0) switches the address space:
+            // track it so user lookups only see shared regions plus
+            // the current mm's own (fork/exec children stop aliasing
+            // the parent's pages).
+            if chave == 0x100 {
+                // TEMP (mm audit): confirm TTBR writes actually flow
+                // and see the pgd values (cap 8 — switches are rare
+                // after boot settles).
+                static mut NM: u32 = 0;
+                unsafe {
+                    if NM < 8 {
+                        NM += 1;
+                        let n = NM;
+                        eprintln!("MM#{n} ins={} ttbr={valor:#x}", self.instrucoes);
+                    }
+                }
+                self.mem.borrow_mut().trocar_mm(valor & 0xFFFF_C000);
             }
             Ok(false)
         } else {
@@ -2522,7 +3252,7 @@ impl CpuBackend for Interpretador {
                 )
                 .map_err(|e| CpuError(e.to_string()))?;
         }
-        self.mem = copia;
+        *self.mem.borrow_mut() = copia;
         self.r = [0; 16];
         self.cpsr = MODO_USUARIO;
         self.instrucoes = 0;
@@ -2661,6 +3391,8 @@ impl CpuBackend for Interpretador {
             // Samples the I-bit directly (NOT linha_irq: the delivery
             // gate consumes its edge, and a logging poll must never
             // steal a delivery).
+            // Log shape is one line per transition (no stack dump):
+            // the 8-word dump used to be 90% of every logfile.
             if self.instrucoes & 1023 == 0 {
                 static mut NLIN: u32 = 0;
                 static mut ULTLIN: u32 = 2;
@@ -2670,20 +3402,13 @@ impl CpuBackend for Interpretador {
                     if estado != ULTLIN || NLIN % 500000 == 0 {
                         ULTLIN = estado;
                         let n = NLIN;
-                            // Current stack (8 words): saved lrs
-                            // reveal the spin's call chain.
-                            let mut st = [0u32; 8];
-                            for (i, s) in st.iter_mut().enumerate() {
-                                *s = self.mem.read_u32(self.r[13].wrapping_add((i as u32) * 4)).unwrap_or(0xDEAD);
-                            }
-                            eprintln!(
-                                "IRQLINHA n={n} pc={:#x} sp={:#x} {} stk={:#x?}",
-                                self.r[15],
-                                self.r[13],
-                                if estado == 0 { "MASK" } else { "FREE" },
-                                st
-                            );
-                        }
+                        eprintln!(
+                            "IRQLINHA n={n} pc={:#x} sp={:#x} {}",
+                            self.r[15],
+                            self.r[13],
+                            if estado == 0 { "MASK" } else { "FREE" },
+                        );
+                    }
                     }
                 }
             if self.cpsr & 0x80 == 0 {
@@ -2719,12 +3444,322 @@ impl CpuBackend for Interpretador {
             if let Some((alvo, _)) = self.armadilhas_mem.get(n.wrapping_sub(1)) {
                 if *alvo == self.r[15] {
                     let (alvo, mut gancho) = self.armadilhas_mem.remove(n - 1);
-                    gancho(&mut self.mem, &mut self.r);
+                    gancho(&mut *self.mem.borrow_mut(), &mut self.r);
                     let pos = self.armadilhas_mem.partition_point(|(a, _)| *a < alvo);
                     self.armadilhas_mem.insert(pos, (alvo, gancho));
                 }
             }
             self.historico[self.hist_pos] = self.r[15];
+            // TEMP (system_server crash forensics): pc 0x11020 was heap
+            // trash via a bad prctl GOT (fixed); pc 0xad0519e4 faults
+            // on 0x388f3095 during Audio init; pc 0xad038700/0xad038796
+            // walker entry/loop; pc 0xad0126d4 mterp invoke store;
+            // pc 0xad03add8 dvmThrowException, 0xad03adb9 WithClassMessage, 0xad02ab6c mterp throw
+            // dvmThreadSelf return. trap_pc_mem never fires for
+            // libdvm addresses, so dump here instead. TRIMMED for
+            // host speed (no historico; short line for the hot
+            // invoke pc). Remove with CRASHOBJ.
+            // TEMP (missing-classname forensics III): chase EVERY heap
+            // pointer in the frame as a potential String (obj+16 =
+            // array ptr, array+12 = UTF-16 chars). Whichever spells
+            // the message names the true msg register (exposes any
+            // fp/v-reg shift). Cap 2. Remove with CRASHOBJ.
+            // TEMP (missing-classname resolve hunt): catch the genuine
+            // const-string resolve for idx 0x3456 (slow path at
+            // 0xad00e3dc? no: 0xad00e210, proven by KFAULT: r1=idx,
+            // r2=table, r4=dex pc 0x41aa7afa, r5=frame). Dump v-regs
+            // (v1 expected, v6 tag, v10 array), chase v6/v10 Strings
+            // and the array length. Cap 2. Remove with CRASHOBJ.
+            if self.r[15] == 0xad00e210 && self.r[1] == 0x3456 {
+                static mut NR: u32 = 0;
+                unsafe {
+                    if NR < 2 {
+                        NR += 1;
+                        let mb = self.mem.borrow();
+                        let r = self.r;
+                        let mut wfr = [0u8; 128];
+                        let okf = mb.read(r[5], 128).map(|s| wfr.copy_from_slice(s)).is_ok();
+                        let v1 = u32::from_le_bytes([wfr[4], wfr[5], wfr[6], wfr[7]]);
+                        let v6 = u32::from_le_bytes([wfr[0x18], wfr[0x19], wfr[0x1a], wfr[0x1b]]);
+                        let v10 = u32::from_le_bytes([wfr[0x28], wfr[0x29], wfr[0x2a], wfr[0x2b]]);
+                        let mut chase = |o: u32| -> String {
+                            let mut wo = [0u8; 20];
+                            if mb.read(o, 20).map(|s| wo.copy_from_slice(s)).is_err() {
+                                return String::from("unread-obj");
+                            }
+                            let ap = u32::from_le_bytes([wo[16], wo[17], wo[18], wo[19]]);
+                            let mut wc = [0u8; 64];
+                            if mb.read(ap.wrapping_add(12), 64).map(|s| wc.copy_from_slice(s)).is_err() {
+                                return format!("obj-ok-noarray@{ap:#x}");
+                            }
+                            let mut nm = String::new();
+                            for k in (0..64).step_by(2) {
+                                let ch = u16::from_le_bytes([wc[k], wc[k + 1]]);
+                                if ch == 0 || ch > 0x7e {
+                                    break;
+                                }
+                                nm.push(ch as u8 as char);
+                            }
+                            if nm.is_empty() {
+                                return String::from("array-noascii");
+                            }
+                            nm
+                        };
+                        let s6 = chase(v6);
+                        let s10 = chase(v10);
+                        let mut wl = [0u8; 4];
+                        let okl = mb.read(v10.wrapping_add(8), 4).map(|s| wl.copy_from_slice(s)).is_ok();
+                        eprintln!("RESOLV#{} ins={} f={} r4={:08x} r5={:08x} v1={v1:#x} v6={v6:#x} v10={v10:#x} s6=\"{s6}\" s10=\"{s10}\" lenok={okl} len={:02x?} frame={:02x?}", unsafe { NR }, self.instrucoes, unsafe { crate::msm7201a::FATIA_ATUAL }, r[4], r[5], wl, wfr);
+                    }
+                }
+            }
+            if self.r[15] != 0xad0126d4
+                && self.r[4] == 0x41aa7afe
+                && (0x4100_0000..0x4200_0000).contains(&self.r[5])
+                && (0xAD00_0000..0xAD08_0000).contains(&self.r[15])
+            {
+                static mut NQ: u32 = 0;
+                unsafe {
+                    if NQ < 2 {
+                        NQ += 1;
+                        let mb = self.mem.borrow();
+                        let r = self.r;
+                        let mut wfr = [0u8; 128];
+                        let okf = mb.read(r[5], 128).map(|s| wfr.copy_from_slice(s)).is_ok();
+                        let mut ach = String::new();
+                        let mut i = 0u32;
+                        while i < 32 {
+                            let cand = u32::from_le_bytes([wfr[i as usize], wfr[i as usize + 1], wfr[i as usize + 2], wfr[i as usize + 3]]);
+                            if (0x4000_0000..0x4200_0000).contains(&cand) {
+                                let mut wo = [0u8; 20];
+                                if mb.read(cand, 20).map(|s| wo.copy_from_slice(s)).is_ok() {
+                                    let ap = u32::from_le_bytes([wo[16], wo[17], wo[18], wo[19]]);
+                                    let mut wc = [0u8; 64];
+                                    if mb.read(ap.wrapping_add(12), 64).map(|s| wc.copy_from_slice(s)).is_ok() {
+                                        // UTF-16LE decode first 32 chars.
+                                        let mut nm = String::new();
+                                        for k in (0..64).step_by(2) {
+                                            let ch = u16::from_le_bytes([wc[k], wc[k + 1]]);
+                                            if ch == 0 || ch > 0x7e {
+                                                break;
+                                            }
+                                            nm.push(ch as u8 as char);
+                                        }
+                                        if !nm.is_empty() {
+                                            ach.push_str(&format!(" [+{i:#x}]={cand:#x} \"{nm}\";"));
+                                        }
+                                    }
+                                }
+                            }
+                            i += 4;
+                        }
+                        eprintln!("MSGSCAN#{} ins={} f={} r4={:08x} r5={:08x} fpok={okf}{ach}", unsafe { NQ }, self.instrucoes, unsafe { crate::msm7201a::FATIA_ATUAL }, r[4], r[5]);
+                    }
+                }
+            }
+            if self.r[15] != 0xad0126d4
+                && self.r[4] == 0x41aa7afe
+                && (0x4100_0000..0x4200_0000).contains(&self.r[5])
+                && (0xAD00_0000..0xAD08_0000).contains(&self.r[15])
+            {
+                static mut NL: u32 = 0;
+                unsafe {
+                    if NL < 2 {
+                        NL += 1;
+                        let mb = self.mem.borrow();
+                        let r = self.r;
+                        let mut wfr = [0u8; 128];
+                        let okf = mb.read(r[5], 128).map(|s| wfr.copy_from_slice(s)).is_ok();
+                        let v1 = u32::from_le_bytes([wfr[4], wfr[5], wfr[6], wfr[7]]);
+                        let v6 = u32::from_le_bytes([wfr[0x18], wfr[0x19], wfr[0x1a], wfr[0x1b]]);
+                        let v7 = u32::from_le_bytes([wfr[0x1c], wfr[0x1d], wfr[0x1e], wfr[0x1f]]);
+                        let v10 = u32::from_le_bytes([wfr[0x28], wfr[0x29], wfr[0x2a], wfr[0x2b]]);
+                        // v7 String object head + its char array.
+                        let mut wso = [0u8; 32];
+                        let oks = mb.read(v7, 32).map(|s| wso.copy_from_slice(s)).is_ok();
+                        let arrp = u32::from_le_bytes([wso[16], wso[17], wso[18], wso[19]]);
+                        let mut wch = [0u8; 64];
+                        let okc = mb.read(arrp.wrapping_add(12), 64).map(|s| wch.copy_from_slice(s)).is_ok();
+                        // v10 array object: length at +8, first elements.
+                        let mut war = [0u8; 40];
+                        let oka = mb.read(v10.wrapping_sub(0), 40).map(|s| war.copy_from_slice(s)).is_ok();
+                        // Live dex bytes around rPC (validates the
+                        // file decode: const-string target reg + invoke).
+                        let mut wdx = [0u8; 24];
+                        let okx = mb.read(r[4].wrapping_sub(10), 24).map(|s| wdx.copy_from_slice(s)).is_ok();
+                        eprintln!("MISSARG#{} ins={} f={} r4={:08x} r5={:08x} v1={:#x} v6={:#x} v7={:#x} v10={:#x} sok={oks} sobj={wso:02x?} cok={okc} chars={wch:02x?} aok={oka} arrobj={war:02x?} dexok={okx} dex={wdx:02x?} frame={wfr:02x?}", unsafe { NL }, self.instrucoes, unsafe { crate::msm7201a::FATIA_ATUAL }, r[4], r[5], v1, v6, v7, v10);
+                    }
+                }
+            }
+            if self.r[15] != 0xad0126d4
+                && self.r[4] == 0x41aa7afa
+                && (0x4100_0000..0x4200_0000).contains(&self.r[5])
+                && (0xAD00_0000..0xAD08_0000).contains(&self.r[15])
+            {
+                static mut NM: u32 = 0;
+                unsafe {
+                    if NM < 4 {
+                        NM += 1;
+                        let mb = self.mem.borrow();
+                        let r = self.r;
+                        let mut wfr = [0u8; 128];
+                        let okf = mb.read(r[5], 128).map(|s| wfr.copy_from_slice(s)).is_ok();
+                        let va10 = u32::from_le_bytes([wfr[0x28], wfr[0x29], wfr[0x2a], wfr[0x2b]]);
+                        let mut warr = [0u8; 40];
+                        let oka = mb.read(va10.wrapping_sub(8), 40).map(|s| warr.copy_from_slice(s)).is_ok();
+                        eprintln!("MISSCLASS#{} ins={} f={} r4={:08x} r5={:08x} lr={:08x} sp={:08x} fpok={okf} frame={wfr:02x?} arr={va10:#x} arok={oka} arrobj={warr:02x?}", unsafe { NM }, self.instrucoes, unsafe { crate::msm7201a::FATIA_ATUAL }, r[4], r[5], r[14], r[13]);
+                    }
+                }
+            }
+            if self.r[15] == 0x11020
+                || self.r[15] == 0xad0519e4
+                || self.r[15] == 0xad038796
+                || self.r[15] == 0xad0126d4
+                || self.r[15] == 0xad038700
+                || self.r[15] == 0xad03add8
+                || self.r[15] == 0xad03adb9
+                || self.r[15] == 0xad0388d5
+                || self.r[15] == 0xad02ab6c
+                || self.r[15] == 0xad00e3dc
+                || self.r[15] == 0xafe0b4c8
+                || self.r[15] == 0xad349854
+            {
+                static mut JH: u32 = 0;
+                static mut JI: u32 = 0;
+                unsafe {
+                    // TEMP (stale walker link): the walker reads dexPC
+                    // as method from a stale node ([0x4104af6c]). Zero it
+                    // at walker entry so the node is skipped (null check)
+                    // instead of crashing LineNumFromPC. One-shot. Remove
+                    // with CRASHOBJ (real fix: stale fp/chain).
+                    if self.r[15] == 0xad038700 {
+                        static mut NZ: u32 = 0;
+                        unsafe {
+                            if NZ < 1 {
+                                NZ += 1;
+                                let mut mbw = self.mem.borrow_mut();
+                                let _ = mbw.write_u32(0x4104af6c, 0);
+                                eprintln!("WALKERFIX ins={} zerado [0x4104af6c]", self.instrucoes);
+                            }
+                        }
+                    }
+                    if self.r[15] == 0xad0126d4 {
+                        // Hot path: one short line per invoke (cap 2000 for
+                        // fp/curFrame correlation). Remove with CRASHOBJ.
+                        if JI < 2000 {
+                            JI += 1;
+                            let ji = unsafe { JI };
+                            eprintln!(
+                                "INVOKE#{} ins={} r0={:#x} r1={:#x} r2={:#x} r4={:#x} r5={:#x}",
+                                ji,
+                                self.instrucoes,
+                                self.r[0],
+                                self.r[1],
+                                self.r[2],
+                                self.r[4],
+                                self.r[5],
+                            );
+                        }
+                    } else if self.r[15] == 0xad00e3dc {
+                        // mterp OP_IGET wild r0 (new wall past Audio):
+                        // r0=[r5+r1*4] locals slot holds a wild object
+                        // pointer; dump the slot computation + locals
+                        // + region of r0. Own budget (fires constantly).
+                        // Remove with CRASHOBJ.
+                        static mut JE: u32 = 0;
+                        unsafe {
+                            if JE < 200 {
+                                JE += 1;
+                                let n = JE;
+                                let mb = self.mem.borrow();
+                                let r = self.r;
+                                let slot = r[5].wrapping_add(r[1].wrapping_mul(4));
+                                let mut wslot = [0u8; 4];
+                                let oks = mb.read(slot, 4).map(|s| wslot.copy_from_slice(s)).is_ok();
+                                let mut wloc = [0u8; 64];
+                                let okl = mb.read(r[5], 64).map(|s| wloc.copy_from_slice(s)).is_ok();
+                                let greg0 = mb.debug_regioes(r[0] & !0xFFF);
+                                let greg5 = mb.debug_regioes(r[5] & !0xFFF);
+                                // Method name for the IGET site: r4 was already
+                                // post-incremented by `ldrh r8,[r4,#2]!`,
+                                // so the Method* is r4-2; name at +16.
+                                let mut mn = [0u8; 4];
+                                let mut mnome_s = String::from("n/a");
+                                let met = r[4].wrapping_sub(2);
+                                let mut wmet = [0u8; 32];
+                                let okm = mb.read(met, 32).map(|s| wmet.copy_from_slice(s)).is_ok();
+                                if okm {
+                                    let pa_nome = u32::from_le_bytes([wmet[16], wmet[17], wmet[18], wmet[19]]);
+                                    let mut mnb = [0u8; 48];
+                                    let oknm = mb.read(pa_nome, 48).map(|s| mnb.copy_from_slice(s)).is_ok();
+                                    if oknm {
+                                        let fim = mnb.iter().position(|&b| b == 0).unwrap_or(48);
+                                        mnome_s = String::from_utf8_lossy(&mnb[..fim]).into_owned();
+                                    } else {
+                                        mnome_s = format!("noname@{pa_nome:#x}");
+                                    }
+                                } else {
+                                    mnome_s = format!("nomet@{met:#x}");
+                                }
+                                eprintln!("MTERP#{n} ins={} f={} r0={:08x} r1={:08x} r2={:08x} r4={:08x} r5={:08x} r6={:08x} r8={:08x} lr={:08x} sp={:08x} slot={:08x} [slot]ok={oks}={wslot:02x?} locok={okl} loc={wloc:02x?} reg0={greg0} reg5={greg5} metodo={mnome_s}", self.instrucoes, unsafe { crate::msm7201a::FATIA_ATUAL }, r[0], r[1], r[2], r[4], r[5], r[6], r[8], r[14], r[13], slot);
+                            }
+                        }
+                    } else if self.r[15] == 0xafe0b4c8 {
+                        // TEMP (capset caller hunt): bionic capset entry.
+                        // Dump JNI caller (lr), header/data structs and
+                        // native stack to name the setCapabilities path
+                        // and its EPERM inputs. Cap 8. Remove with CRASHOBJ.
+                        static mut NC: u32 = 0;
+                        unsafe {
+                            if NC < 8 {
+                                NC += 1;
+                                let n = NC;
+                                let mb = self.mem.borrow();
+                                let r = self.r;
+                                let mut hh = [0u8; 8];
+                                let okh = mb.read(r[0], 8).map(|s| hh.copy_from_slice(s)).is_ok();
+                                let mut dd = [0u8; 12];
+                                let okd = mb.read(r[1], 12).map(|s| dd.copy_from_slice(s)).is_ok();
+                                let mut sk = [0u8; 64];
+                                let oks = mb.read(r[13], 64).map(|s| sk.copy_from_slice(s)).is_ok();
+                                // JNI caller code around lr (Thumb): dump
+                                // 64B back + 32 forward to disassemble the
+                                // setCapabilities JNI path offline.
+                                let mut cj = [0u8; 96];
+                                let okj = mb.read(r[14].wrapping_sub(65).wrapping_sub(64), 96).map(|s| cj.copy_from_slice(s)).is_ok();
+                                eprintln!("CAPSET#{} ins={} f={} lr={:08x} r0={:08x} r1={:08x} sp={:08x} spok={} stk={:02x?} hok={} hdr={:02x?} dok={} dat={:02x?} jok={} jcode={:02x?}", unsafe { NC }, self.instrucoes, unsafe { crate::msm7201a::FATIA_ATUAL }, r[14], r[0], r[1], r[13], oks, sk, okh, hh, okd, dd, okj, cj);
+                            }
+                        }
+                    } else if self.r[15] == 0xad349854 {
+                        // TEMP (setCapabilities JNI entry): the (JJ)V args
+                        // (r2/r3 = arg0 lo/hi, stack = arg1 lo/hi) are the
+                        // Java-passed capability masks. Dump them to tell
+                        // poisoned-Java from corrupted-native. Cap 4.
+                        // Remove with CRASHOBJ.
+                        static mut NJ: u32 = 0;
+                        unsafe {
+                            if NJ < 4 {
+                                NJ += 1;
+                                let mb = self.mem.borrow();
+                                let r = self.r;
+                                let mut sa = [0u8; 16];
+                                let oks = mb.read(r[13], 16).map(|s| sa.copy_from_slice(s)).is_ok();
+                                eprintln!("JNISET#{} ins={} f={} r0={:08x} r1={:08x} r2={:08x} r3={:08x} sok={} stk={:02x?}", unsafe { NJ }, self.instrucoes, unsafe { crate::msm7201a::FATIA_ATUAL }, r[0], r[1], r[2], r[3], oks, sa);
+                            }
+                        }
+                    } else if JH < 40 && self.r[15] != 0xad038700 {
+                        JH += 1;
+                        let n = unsafe { JH };
+                        let mb = self.mem.borrow();
+                        let r = self.r;
+                        let mut wnd = [0u8; 80];
+                        let okn = mb.read(0x4104af40, 80).map(|s| wnd.copy_from_slice(s)).is_ok();
+                        let mut w4 = [0u8; 16];
+                        let ok4 = mb.read(r[4], 16).map(|s| w4.copy_from_slice(s)).is_ok();
+                        eprintln!("CRASHDUMP#{n} ins={} pc={:08x} r0={:08x} r1={:08x} r2={:08x} r3={:08x} r4={:08x} r5={:08x} r6={:08x} r7={:08x} r8={:08x} r9={:08x} lr={:08x} sp={:08x} [r4]ok={ok4}={w4:02x?} nodeaf40ok={okn}={wnd:02x?}", self.instrucoes, r[15], r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[14], r[13]);
+                    }
+                }
+            }
             self.hist_pos += 1;
             if self.hist_pos >= self.historico.len() {
                 self.hist_pos = 0;
@@ -2741,9 +3776,8 @@ impl CpuBackend for Interpretador {
                 Err(motivo) => {
                     // TEMP (kernel bring-up): failing instruction.
                     if matches!(motivo, StopReason::Exception { .. }) {
-                        let w = self
-                            .mem
-                            .read(self.r[15], 4)
+                        let w = self.mem.borrow()
+                                                        .read(self.r[15], 4)
                             .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
                             .unwrap_or(0xDEAD);
                         eprintln!("FAILINS pc={:#x} ins={:#x}", self.r[15], w);
@@ -2796,26 +3830,26 @@ impl CpuBackend for Interpretador {
     }
 
     fn read_mem(&self, addr: u32, buf: &mut [u8]) -> Result<(), CpuError> {
-        self.mem
+        self.mem.borrow()
             .read(addr, buf.len() as u32)
             .map(|bytes| buf.copy_from_slice(bytes))
             .map_err(|e| CpuError(e.to_string()))
     }
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), CpuError> {
-        self.mem
+        self.mem.borrow_mut()
             .write(addr, data)
             .map_err(|e| CpuError(e.to_string()))
     }
 
     fn map_zeroed(&mut self, name: &'static str, base: u32, len: usize) -> Result<(), CpuError> {
-        self.mem
+        self.mem.borrow_mut()
             .map_zeroed(name, base, len)
             .map_err(|e| CpuError(e.to_string()))
     }
 
     fn desmapeia_intervalo(&mut self, base: u32, len: usize) -> Result<(), CpuError> {
-        self.mem.desmapeia_intervalo(base, len);
+        self.mem.borrow_mut().desmapeia_intervalo(base, len);
         Ok(())
     }
 }
@@ -2881,6 +3915,26 @@ mod tests {
         let mut cpu = cpu_with(&arm(&[0xe1b0_f00e]));
         cpu.write_reg(Reg::Lr, RETURN_MAGIC);
         assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
+    }
+
+    #[test]
+    fn undef_entrega_ao_vetor_em_modo_usuario() {
+        // UND delivery: from USR (Thumb, pc AT the faulting insn),
+        // entra_undef parks spsr_und, switches to UND/ARM/I-masked,
+        // sets lr = fault+2 and vectors to 0x04 (low vectors: the
+        // test SCTLR has no V bit). The guest handler runs instead
+        // of the run stopping.
+        let mut cpu = cpu_with(&arm(&[0xe1a0_0000]));
+        cpu.write_reg(Reg::Pc, 0x1000);
+        // Force Thumb USR: T set, mode USR (cpu_with leaves ARM).
+        cpu.cpsr |= 1 << 5;
+        assert!(cpu.em_usuario());
+        cpu.entra_undef();
+        assert_eq!(cpu.cpsr & 0x1F, 0x1B);
+        assert_eq!(cpu.cpsr & (1 << 5), 0);
+        assert_eq!(cpu.read_reg(Reg::Pc), 0x04);
+        assert_eq!(cpu.read_reg(Reg::Lr), 0x1002);
+        assert!(!cpu.em_usuario());
     }
 
     #[test]

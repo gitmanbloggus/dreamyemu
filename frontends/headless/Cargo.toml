@@ -1,25 +1,25 @@
 [package]
-name = "zeebx-headless"
+name = "dreamyemu-headless"
 version = "0.4.2"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "O Zeebx sem interface, para quem tem frontend próprio"
+description = "Dreamyemu without a UI, for hosts with their own frontend"
 publish = false
 
 # Um binário só, e nenhuma biblioteca: este pacote não tem nada que alguém queira importar. O
 # que é reaproveitável mora no núcleo, que é de onde ele vem.
 [[bin]]
-name = "zeebx-headless"
+name = "dreamyemu-headless"
 path = "src/main.rs"
 
 [dependencies]
-zeebx = { path = "../.." }
+dreamyemu = { path = "../.." }
 
 # **Não há eframe aqui, e é essa a razão de este pacote existir.** O eframe existe para pôr uma
 # interface na tela; aqui não há interface, há um quadro, e girar um laço de egui por baixo de
 # nada seria pagar a interface inteira para desenhar um retângulo.
 #
-# Isso é sobre o **laço**, não sobre o tamanho da compilação: o `zeebx` abaixo é a biblioteca
+# Isso é sobre o **laço**, não sobre o tamanho da compilação: o `dreamyemu` abaixo é a biblioteca
 # inteira, e fora do Android ela traz o `rfd`, o Discord e o `ureq` por conta própria
 # — ver o `[target.'cfg(not(target_os = "android"))'.dependencies]` da raiz. Compilar isto
 # compila aquilo junto. Separá-las de verdade seria pôr as telas do desktop atrás de uma feature

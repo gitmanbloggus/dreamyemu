@@ -71,7 +71,7 @@ impl Nivel {
     /// ajustes iguais deixavam de ser iguais — e foi assim que o teste do `config.ini` de fábrica
     /// pegou o `log = warn` do arquivo contra o padrão `aviso` do emulador.
     ///
-    /// Os nomes são os mesmos que o `zeebx_log` do core Libretro oferece, de propósito: um nível,
+    /// Os nomes são os mesmos que o `dreamyemu_log` do core Libretro oferece, de propósito: um nível,
     /// um token, nos três lugares que o escrevem.
     pub fn nome(self) -> &'static str {
         match self {
@@ -97,7 +97,7 @@ impl Nivel {
     /// O nível a partir do texto de uma opção, em português ou no nome do `log` do Rust.
     ///
     /// Aceita os dois vocabulários de propósito: o usuário do core Libretro escreve
-    /// `depuracao`, e quem lê o `ZEEBX_LOG` de um script costuma escrever `debug`.
+    /// `depuracao`, e quem lê o `DREAMYEMU_LOG` de um script costuma escrever `debug`.
     pub fn de_texto(texto: &str) -> Option<Self> {
         match texto.trim().to_ascii_lowercase().as_str() {
             "depuracao" | "depuração" | "debug" | "verbose" => Some(Nivel::Depuracao),
@@ -121,7 +121,7 @@ impl Nivel {
 /// O que a opção pediu: um teto de gravidade, ou nada.
 ///
 /// **Existe porque "desligado" e "não entendi" não são a mesma coisa.** Devolver `None` para os
-/// dois faria um `ZEEBX_LOG=banana` desligar o registro em silêncio, que é o pior desfecho
+/// dois faria um `DREAMYEMU_LOG=banana` desligar o registro em silêncio, que é o pior desfecho
 /// possível para uma opção de depuração: quem escreveu errado precisa saber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ajuste {
@@ -446,12 +446,12 @@ pub fn limpa() {
     zera_descartes();
 }
 
-/// Lê o nível de `ZEEBX_LOG` e o aplica, quando a variável existe.
+/// Lê o nível de `DREAMYEMU_LOG` e o aplica, quando a variável existe.
 ///
 /// Vale para todo frontend de uma vez — headless, varredura, desktop — sem depender de opção
 /// de interface, que é o que serve a quem está depurando na linha de comando.
 pub fn le_do_ambiente() {
-    let Ok(valor) = std::env::var("ZEEBX_LOG") else {
+    let Ok(valor) = std::env::var("DREAMYEMU_LOG") else {
         return;
     };
     match Ajuste::de_texto(&valor) {
@@ -459,7 +459,7 @@ pub fn le_do_ambiente() {
         None => escreve(
             Nivel::Aviso,
             "registro",
-            &format!("ZEEBX_LOG=`{valor}` não é um nível; seguindo no padrão"),
+            &format!("DREAMYEMU_LOG=`{valor}` não é um nível; seguindo no padrão"),
         ),
     }
 }
@@ -726,7 +726,7 @@ mod tests {
         let _sozinho = sozinho();
         limpa();
         define_nivel(Nivel::Fatal);
-        let pasta = std::env::temp_dir().join(format!("zeebx-registro-{}", std::process::id()));
+        let pasta = std::env::temp_dir().join(format!("dreamyemu-registro-{}", std::process::id()));
         let primeiro = pasta.join("primeiro.log");
         let segundo = pasta.join("segundo.log");
 

@@ -6,11 +6,13 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
+use std::ffi::c_void;
 use std::mem::size_of;
 use std::rc::Rc;
 
-use dynarmic::a32::{ArchVersion, Callbacks, Dynarmic as Jit, VAddr};
-use dynarmic::{CallbackImpl, GuestInt, HaltReason};
+use dynarmic::a32::{ArchVersion, Callbacks, Coprocessor, Dynarmic as Jit, VAddr};
+use dynarmic::cxx::CxxSharedPtr;
+use dynarmic::{CallbackImpl, ExclusiveMonitor, GuestInt, HaltReason};
 
 use super::mem::GuestMemory;
 use super::{API_BASE, API_SIZE, RETURN_MAGIC};
@@ -50,6 +52,10 @@ enum Parada {
     /// `Fetch`, this is not a fault: the host reports `(r0, r1)` and resumes
     /// into the real bytes.
     Armadilha(u32),
+    /// The guest reached an address armed by [`DynarmicCpu::trap_pc_mem`].
+    /// Unlike `Fetch`, this is not a fault: the host runs the armed hook
+    /// with guest memory and registers, then resumes into the real bytes.
+    ArmadilhaMem(u32),
 }
 
 /// Guest pages already fetched as code, one bit per page.
@@ -140,6 +146,11 @@ struct Estado {
     /// Consumed by that fetch. Without it the step would fault again and the
     /// outer loop would never make progress past the trapped instruction.
     passagem: Cell<bool>,
+    /// Multi-PC traps: address, Thumb patch, original word, hook. Shared
+    /// with the backend (like `memoria`): arming survives `reset`. Same
+    /// hook shape as the interpretador, so harness code ports unchanged.
+    armadilhas_mem:
+        Rc<RefCell<Vec<(u32, bool, u32, Box<dyn FnMut(&mut GuestMemory, &mut [u32; 16])>)>>>,
     jit: Cell<*mut Jit<Estado>>,
     /// Dynarmic's page table: `PAGINAS` pointers, the start of each page on the host, or
     /// null for pages that must go through the callbacks. See [`DynarmicCpu::tabela`].
@@ -336,6 +347,15 @@ impl Callbacks for Estado {
             }
             super::apara_semihosting(&mut saida);
             jit.set_reg(0, 0);
+        } else if swi == SVC_ARMADILHA || swi == SVC_ARMADILHA_THUMB {
+            // Serving trap (patched in by `trap_pc_mem`): halt for the run
+            // loop, which looks the hook up by PC. The JIT reports the
+            // instruction AFTER the SVC (measured: svc at 0x4 reports
+            // pc=0x8), so step back over it; the T bit selects the width.
+            let jit = unsafe { &*cb.jit.get() };
+            let pc = jit.get_pc();
+            let t = jit.get_cpsr() & 0x20 != 0;
+            Self::para(cb, Parada::ArmadilhaMem(pc.wrapping_sub(if t { 2 } else { 4 })));
         } else if cb.parada.get() == Parada::Nenhuma {
             let pc = unsafe { (*cb.jit.get()).get_pc() };
             Self::para(cb, Parada::Excecao(pc));
@@ -375,15 +395,106 @@ impl Callbacks for Estado {
 /// The ARM semihosting `SVC` numbers: Thumb's and ARM's.
 const SEMIHOSTING: [u32; 2] = [0xab, 0x12_3456];
 
+/// SVC numbers reserved for serving traps (see [`DynarmicCpu::trap_pc_mem`]).
+/// The guest uses `svc #0` (syscalls), `0xAB`/`0x123456` (semihosting) and
+/// `0xCDAB89` (SPL semihosting); these two never appear on the wire.
+const SVC_ARMADILHA: u32 = 0xD0_0000;
+const SVC_ARMADILHA_THUMB: u32 = 0xD0;
+
+/// ARM `svc #SVC_ARMADILHA` encoding (patched over trapped ARM code).
+const SVC_ARMADILHA_INSTR: u32 = 0xEF00_0000 | SVC_ARMADILHA;
+/// Thumb `svc #SVC_ARMADILHA_THUMB` encoding (patched over trapped Thumb code).
+const SVC_ARMADILHA_THUMB_INSTR: u32 = 0xDF00 | SVC_ARMADILHA_THUMB;
+
 /// Every how many JIT entries the clock is read, when measurement is on.
 const AMOSTRA_DO_JIT: u64 = 64;
 
 /// A32 recompiler. Stays separate from the default backend until equivalence is established game
 /// by game; creating the CPU does not allocate the JIT, because the guest map only exists in `reset`.
+/// CP15 state for the Dream bring-up: the flat model, mirroring the
+/// interpretador's `arm_coproc` (accept-and-store, mapping unchanged).
+/// Lives in a `Box` so the C++ coprocessor shim keeps a stable pointer;
+/// replaced on every `reset`, after the old JIT (its only user) is gone.
+struct P15Ctx {
+    cp15: Vec<(u32, u32)>,
+    /// MCR p15 c7,c0,4 seen (guest asked to sleep until interrupt).
+    /// Recorded only for now: IRQ delivery under Dynarmic is open.
+    wfi: bool,
+    /// Last TTBR0 value (key `0x100`), tracked like the interpretador.
+    ttbr: u32,
+    mem: Rc<RefCell<GuestMemory>>,
+    /// Set after `init`, so the unhandled-encoding path can stop the run
+    /// cleanly instead of aborting the process.
+    jit: *mut Jit<Estado>,
+    /// Set by the unhandled path; the `run` loop maps it to
+    /// `StopReason::Exception` at the halting PC.
+    fault: bool,
+}
+
+/// MCR p15 c7,c0,4 (wait-for-interrupt) key.
+const P15_WFI: u32 = (7 << 7) | 4;
+/// TTBR0 (MCR/MRC p15,0,Rt,c2,c0,0) key.
+const P15_TTBR0: u32 = 2 << 7;
+/// Main ID (MRC p15,0,Rd,c0,c0,0) key and the ARM1136EJ-S value the
+/// Dream's MSM7201A reports (the kernel parks if this reads 0).
+const P15_MIDR: u32 = 0;
+const MIDR_ARM1136: u32 = 0x4117_B360;
+
+extern "C" fn p15_access(ctx: *mut c_void, key: u32, is_write: u32, value: u32) -> u32 {
+    let st = unsafe { &mut *(ctx as *mut P15Ctx) };
+    if is_write != 0 {
+        if key == P15_WFI {
+            st.wfi = true;
+            return 0;
+        }
+        match st.cp15.iter_mut().find(|(k, _)| *k as u32 == key) {
+            Some(slot) => slot.1 = value,
+            None => st.cp15.push((key, value)),
+        }
+        if key == P15_TTBR0 {
+            st.ttbr = value & 0xFFFF_C000;
+            let _ = st.mem.borrow_mut().trocar_mm(st.ttbr);
+        }
+        0
+    } else {
+        st.cp15.iter().find(|(k, _)| *k as u32 == key).map_or(0, |(_, v)| *v)
+    }
+}
+
+extern "C" fn p15_unhandled(ctx: *mut c_void, kind: u32, _d0: u32, _d1: u32) {
+    let st = unsafe { &mut *(ctx as *mut P15Ctx) };
+    eprintln!("dynarmic-p15: unhandled coprocessor encoding kind={kind}");
+    st.fault = true;
+    if !st.jit.is_null() {
+        unsafe { (*st.jit).halt(HaltReason::UserDefined1) };
+    }
+}
+
 pub struct DynarmicCpu {
     memoria: Rc<RefCell<GuestMemory>>,
     semihosting: Rc<RefCell<String>>,
     jit: Option<Box<Jit<Estado>>>,
+    /// Flat CP15 model for the Dream bring-up (see `P15Ctx`).
+    p15: Option<Box<P15Ctx>>,
+    /// Exclusive-access monitor for LDREX/STREX (the Dream kernel uses
+    /// them for every spinlock; without it translation aborts).
+    /// Boxed: the JIT keeps a raw pointer to it, so the struct must not
+    /// move after `reset` hands it over.
+    monitor_exclusivo: Box<ExclusiveMonitor>,
+    /// Multi-PC trap table, shared with the JIT state (like `memoria`):
+    /// arming survives `reset`. Entry: address, Thumb patch, original
+    /// word, hook.
+    armadilhas_mem: Rc<
+        RefCell<Vec<(u32, bool, u32, Box<dyn FnMut(&mut GuestMemory, &mut [u32; 16])>)>>,
+    >,
+    /// IRQ line source, parked: the JIT never takes interrupts on its own,
+    /// so delivery always happens on the interpretador side. Stored for a
+    /// future delivery path; set alongside the interpretador's hook.
+    fonte_irq: Option<Box<dyn FnMut(&GuestMemory, bool) -> bool>>,
+    /// Sparse pc history for halt traces (run entries + trap arrivals).
+    /// The interpretador logs every instruction; here that would cost the
+    /// JIT advantage, so this names stalls instead of replaying them.
+    historico: Vec<u32>,
     /// **The page table: memory access without a callback.** Without it, every read and write
     /// from recompiled code would leave the JIT for a Rust callback, take the map via `RefCell` and
     /// look up the region. In Need for Speed, while racing, that left the emulator at 176 million
@@ -405,14 +516,120 @@ pub struct DynarmicCpu {
 
 impl DynarmicCpu {
     pub fn new() -> Result<Self, CpuError> {
+        Self::with_shared_mem(Rc::new(RefCell::new(GuestMemory::new())))
+    }
+
+    /// Same as `new`, but the guest map is shared with a sibling backend
+    /// (see `DualBackend`): both backends read and write the same bytes.
+    /// `reset` replaces the map *contents* without swapping the `Rc`,
+    /// keeping every clone (including the C++ trap table's view) valid.
+    pub fn with_shared_mem(memoria: Rc<RefCell<GuestMemory>>) -> Result<Self, CpuError> {
         Ok(Self {
-            memoria: Default::default(),
+            memoria,
             semihosting: Default::default(),
             jit: None,
+            p15: None,
+            monitor_exclusivo: Box::new(ExclusiveMonitor::new(1)),
+            armadilhas_mem: Default::default(),
+            fonte_irq: None,
+            historico: Vec::new(),
             tabela: vec![std::ptr::null_mut(); PAGINAS].into_boxed_slice(),
             armadilha_pc: None,
             gancho_pc: None,
         })
+    }
+
+    /// Whether the current mode is USR (the only mode this backend runs).
+    pub fn em_usuario(&self) -> bool {
+        self.cpsr() & 0x1F == MODO_USUARIO
+    }
+
+    /// CP15 read (flat model, mirrors the interpretador's `le_cp15`).
+    pub fn le_cp15(&self, chave: u32) -> Option<u32> {
+        self.p15.as_ref().and_then(|p| {
+            p.cp15
+                .iter()
+                .find(|(k, _)| *k == chave)
+                .map(|(_, v)| *v)
+        })
+    }
+
+    /// Whole CP15 store (dual-backend sync).
+    pub fn cp15_vec(&self) -> Vec<(u32, u32)> {
+        self.p15
+            .as_ref()
+            .map(|p| p.cp15.clone())
+            .unwrap_or_default()
+    }
+
+    /// Replace the CP15 store wholesale (dual-backend sync counterpart).
+    pub fn carrega_cp15(&mut self, v: Vec<(u32, u32)>) {
+        if let Some(p) = self.p15.as_mut() {
+            p.cp15 = v;
+        }
+    }
+
+    /// Clear a stale LDREX reservation (dual-backend switch).
+    pub fn limpa_exclusivo(&mut self) {
+        self.monitor_exclusivo.clear();
+    }
+
+    /// Install the IRQ line source (parked: delivery always runs on the
+    /// interpretador side; stored here for a future delivery path).
+    pub fn set_fonte_irq(&mut self, fonte: impl FnMut(&GuestMemory, bool) -> bool + 'static) {
+        self.fonte_irq = Some(Box::new(fonte));
+    }
+
+    /// PCs of recently executed code, oldest first (sparse: run entries
+    /// and trap arrivals — see the `historico` field).
+    pub fn historico(&self) -> Vec<u32> {
+        self.historico.clone()
+    }
+
+    fn anota_pc(&mut self, pc: u32) {
+        self.historico.push(pc);
+        if self.historico.len() > 2048 {
+            self.historico.remove(0);
+        }
+    }
+
+    /// Publish `[base, base+len)` to the fast table and drop translated
+    /// blocks covering it. Call after mapping new pages into shared
+    /// memory outside `reset`/`map_zeroed`.
+    pub fn atualiza_tabela(&mut self, base: u32, len: u32) {
+        if len == 0 {
+            return;
+        }
+        let fim = base.saturating_add(len as u32);
+        {
+            let memoria = self.memoria.borrow();
+            for pagina in (base / PAGE)..=(fim.saturating_sub(1) / PAGE) {
+                self.tabela[pagina as usize] = ponteiro_da_pagina(&memoria, pagina);
+            }
+        }
+        self.invalida(base, len);
+    }
+
+    /// Rebuild the whole fast table and drop all translated blocks.
+    /// Needed after carving (survivor buffers move, invalidating every
+    /// stale host pointer), so it must not be skipped.
+    pub fn reconstroi_tabela(&mut self) {
+        {
+            let memoria = self.memoria.borrow();
+            for pagina in 0..PAGINAS as u32 {
+                self.tabela[pagina as usize] = ponteiro_da_pagina(&memoria, pagina);
+            }
+        }
+        self.invalida(0, 0xFFFF_FFFF);
+    }
+
+    /// Drop translated blocks covering `[addr, addr+len)`.
+    pub fn invalida(&mut self, addr: u32, len: u32) {
+        if let Ok(jit) = self.jit_mut() {
+            let inicio = addr & !(PAGE - 1);
+            let fim = addr.saturating_add(len);
+            jit.invalidate_cache_range(inicio, fim.saturating_sub(inicio) as usize);
+        }
     }
 
     /// Puts back into the table the pages in `[inicio, fim)` nothing else needs to intercept.
@@ -565,6 +782,105 @@ impl DynarmicCpu {
         }
     }
 
+    /// Arms a serving hook at `addr`: on arrival the hook runs with guest
+    /// memory and registers, then the real instruction steps. Same contract
+    /// as the interpretador's, so harness code ports unchanged — including
+    /// replace semantics (re-arming swaps the hook) and Thumb transparency
+    /// (nothing executes in place; see `trap_pc_mem_thumb` for 16-bit sites).
+    /// Implemented as a debugger-style SVC patch, so only the trapped
+    /// instruction faults: the rest of the page keeps full JIT speed.
+    pub fn trap_pc_mem(
+        &mut self,
+        addr: u32,
+        gancho: impl FnMut(&mut GuestMemory, &mut [u32; 16]) + 'static,
+    ) {
+        self.arma(addr, false, Box::new(gancho));
+    }
+
+    /// Same as [`DynarmicCpu::trap_pc_mem`] for 16-bit Thumb code (the
+    /// patch is one halfword; the run-loop path is shared). The harness
+    /// picks per site — it disassembled the target and knows the mode.
+    pub fn trap_pc_mem_thumb(
+        &mut self,
+        addr: u32,
+        gancho: impl FnMut(&mut GuestMemory, &mut [u32; 16]) + 'static,
+    ) {
+        self.arma(addr, true, Box::new(gancho));
+    }
+
+    fn arma(
+        &mut self,
+        addr: u32,
+        thumb: bool,
+        gancho: Box<dyn FnMut(&mut GuestMemory, &mut [u32; 16])>,
+    ) {
+        let (svc, larg) = if thumb {
+            (SVC_ARMADILHA_THUMB_INSTR, 2)
+        } else {
+            (SVC_ARMADILHA_INSTR, 4)
+        };
+        // Read the original word first: patching an unmapped address
+        // would fault it in as real code, and a trap that can never fire
+        // is a silent harness bug — log loudly instead of recording it.
+        // On replace, keep the stored original: the bytes in memory are
+        // already the patch, and re-reading them would make the restore
+        // write the trap back over the real instruction.
+        let mut original = [0u8; 4];
+        let legivel = self
+            .memoria
+            .borrow()
+            .read(addr, larg)
+            .map(|b| original[..larg as usize].copy_from_slice(b))
+            .is_ok();
+        {
+            let mut tab = self.armadilhas_mem.borrow_mut();
+            if let Some(slot) = tab.iter_mut().find(|(a, _, _, _)| *a == addr) {
+                slot.1 = thumb;
+                slot.3 = gancho;
+            } else {
+                let pos = tab.partition_point(|(a, _, _, _)| *a < addr);
+                tab.insert(pos, (addr, thumb, u32::from_le_bytes(original), gancho));
+            }
+        }
+        if !legivel {
+            eprintln!("dynarmic: trap armado em endereço ilegível {addr:#x}");
+            return;
+        }
+        if self
+            .memoria
+            .borrow_mut()
+            .write(addr, &svc.to_le_bytes()[..larg as usize])
+            .is_err()
+        {
+            eprintln!("dynarmic: trap não gravou em {addr:#x}");
+            return;
+        }
+        if let Ok(jit) = self.jit_mut() {
+            jit.invalidate_cache_range(addr & !(PAGE - 1), PAGE as usize);
+        }
+    }
+
+    /// Removes the hook at `addr`, if any, restoring the original bytes.
+    pub fn untrap_pc_mem(&mut self, addr: u32) {
+        let alvo: u32 = addr;
+        let achado = {
+            let mut tab = self.armadilhas_mem.borrow_mut();
+            tab.iter()
+                .position(|(a, _, _, _)| *a == alvo)
+                .map(|i| tab.remove(i))
+        };
+        if let Some((_, thumb, original, _)) = achado {
+            let larg = if thumb { 2 } else { 4 };
+            let _ = self.memoria.borrow_mut().write(
+                alvo,
+                &original.to_le_bytes()[..larg as usize],
+            );
+            if let Ok(jit) = self.jit_mut() {
+                jit.invalidate_cache_range(alvo & !(PAGE - 1), PAGE as usize);
+            }
+        }
+    }
+
     /// Run the trapped instruction for real after the hook has fired.
     ///
     /// Grants one fetch of the trapped address (`passagem`), executes it via
@@ -630,8 +946,9 @@ impl DynarmicCpu {
             // without the trapped instruction executing, but re-translation
             // is deterministic: the same fetch consumes the pass again on the
             // same bytes. Unreachable in practice; continuing lets the outer
-            // loop re-report rather than lose the arrival.
-            Parada::Nenhuma | Parada::Armadilha(_) => Ok(None),
+            // loop re-report rather than lose the arrival. Same for a second
+            // `ArmadilhaMem` (a hook stepping into another trapped fetch).
+            Parada::Nenhuma | Parada::Armadilha(_) | Parada::ArmadilhaMem(_) => Ok(None),
             Parada::Fetch(destino) if destino == RETURN_MAGIC => Ok(Some(StopReason::Returned)),
             Parada::Fetch(destino)
                 if (API_BASE..API_BASE.saturating_add(API_SIZE)).contains(&destino) =>
@@ -653,6 +970,11 @@ impl DynarmicCpu {
 
 impl CpuBackend for DynarmicCpu {
     fn reset(&mut self, mem: &GuestMemory) -> Result<(), CpuError> {
+        // Drop the old JIT first: it owns the C++ coprocessor object,
+        // which is the only user of the old p15 context pointer.
+        // Then the context itself, before a fresh one is made below.
+        self.jit = None;
+        self.p15 = None;
         // `GuestMemory` is deliberately built once before execution. Copying the map
         // into the memory the callbacks own keeps the backend contract: the Rust API and
         // ARM see the same bytes from here on.
@@ -690,8 +1012,21 @@ impl CpuBackend for DynarmicCpu {
             PAGINAS,
             copia.regions().len()
         );
-        self.memoria = Rc::new(RefCell::new(copia));
+        *self.memoria.borrow_mut() = copia;
         self.semihosting.borrow_mut().clear();
+        // Flat CP15 model for the Dream bring-up (mirrors the
+        // interpretador's `arm_coproc` accept-and-store; the Main ID the
+        // kernel's procinfo lookup needs is seeded here, as there).
+        // Boxed for a stable address: the C++ shim calls back into it.
+        let mut p15 = Box::new(P15Ctx {
+            cp15: vec![(P15_MIDR, MIDR_ARM1136)],
+            wfi: false,
+            ttbr: 0,
+            mem: self.memoria.clone(),
+            jit: std::ptr::null_mut(),
+            fault: false,
+        });
+        let p15_ptr = (&mut *p15) as *mut P15Ctx as *mut c_void;
         let estado = Estado {
             memoria: self.memoria.clone(),
             semihosting: self.semihosting.clone(),
@@ -711,6 +1046,7 @@ impl CpuBackend for DynarmicCpu {
             // start over; the harness tap does not.
             armadilha: Cell::new(self.armadilha_pc),
             passagem: Cell::new(false),
+            armadilhas_mem: self.armadilhas_mem.clone(),
             jit: Cell::new(std::ptr::null_mut()),
             tabela: self.tabela.as_mut_ptr(),
         };
@@ -719,7 +1055,7 @@ impl CpuBackend for DynarmicCpu {
         // 64 MiB fits on desktop. On Switch this block competes for heap with the game
         // and Mesa; 32 MiB still covers Double Dragon's translated code
         // when the title is opened holding R.
-        config.code_cache_size(if cfg!(zeebx_switch) {
+        config.code_cache_size(if cfg!(dreamyemu_switch) {
             32 * 1024 * 1024
         } else {
             64 * 1024 * 1024
@@ -727,9 +1063,19 @@ impl CpuBackend for DynarmicCpu {
         // Entry = start of the page on the host, no absolute offset or attribute bits.
         config.page_table_mask(0);
         unsafe { config.page_table(self.tabela.as_mut_ptr().cast()) };
+        config.global_monitor(&mut self.monitor_exclusivo);
+        // Dream p15 coprocessor (vendored patch): without it any MCR/MRC
+        // aborts the process inside the JIT. MCR/MRC route to `p15_access`
+        // above; LDC/STC are silent NOPs; anything else halts cleanly.
+        config.coprocessor(15, CxxSharedPtr::<Coprocessor>::p15(p15_ptr, p15_access, p15_unhandled));
         let mut jit = Box::new(config.init(estado));
+        // Balance our handle: the JIT holds its own copy now.
+        config.release_coprocessor(15);
         let ptr = &mut *jit as *mut Jit<Estado>;
         jit.jit.set(ptr);
+        // The unhandled-coproc path halts through here.
+        p15.jit = ptr;
+        self.p15 = Some(p15);
         jit.set_cpsr(MODO_USUARIO);
         self.jit = Some(jit);
         Ok(())
@@ -862,6 +1208,52 @@ impl CpuBackend for DynarmicCpu {
         Ok(())
     }
 
+    /// Demand-map zeroed RAM (the harness's fault arm), then publish it.
+    /// Two things must happen together, or the guest refaults forever:
+    /// the fast page table learns the new pages AND any translation
+    /// cached from when the fetch failed is dropped — a stale
+    /// no-execute verdict must not survive the mapping it faulted on.
+    fn map_zeroed(&mut self, name: &'static str, base: u32, len: usize) -> Result<(), CpuError> {
+        self.memoria
+            .borrow_mut()
+            .map_zeroed(name, base, len)
+            .map_err(|e| CpuError(e.to_string()))?;
+        if len == 0 {
+            return Ok(());
+        }
+        let fim = base.saturating_add(len as u32);
+        {
+            let memoria = self.memoria.borrow();
+            for pagina in (base / PAGE)..=(fim.saturating_sub(1) / PAGE) {
+                self.tabela[pagina as usize] = ponteiro_da_pagina(&memoria, pagina);
+            }
+        }
+        if let Ok(jit) = self.jit_mut() {
+            let inicio = base & !(PAGE - 1);
+            jit.invalidate_cache_range(inicio, (fim.saturating_sub(inicio)) as usize);
+        }
+        Ok(())
+    }
+
+    /// Carve [base, base+len) out of the map (bring-up use: a live mapping
+    /// replacing stale bytes). Unpublish the pages so later accesses fault
+    /// instead of reading shadows, and drop translations of the old bytes.
+    fn desmapeia_intervalo(&mut self, base: u32, len: usize) -> Result<(), CpuError> {
+        if len == 0 {
+            return Ok(());
+        }
+        let fim = base.saturating_add(len as u32);
+        self.memoria.borrow_mut().desmapeia_intervalo(base, len);
+        for pagina in (base / PAGE)..=(fim.saturating_sub(1) / PAGE) {
+            self.tabela[pagina as usize] = std::ptr::null_mut();
+        }
+        if let Ok(jit) = self.jit_mut() {
+            let inicio = base & !(PAGE - 1);
+            jit.invalidate_cache_range(inicio, (fim.saturating_sub(inicio)) as usize);
+        }
+        Ok(())
+    }
+
     fn fill_mem(&mut self, addr: u32, valor: u8, len: u32) -> Result<(), CpuError> {
         self.memoria
             .borrow_mut()
@@ -895,6 +1287,7 @@ impl CpuBackend for DynarmicCpu {
         if max_instructions == 0 {
             return Ok(StopReason::Budget);
         }
+        self.anota_pc(pc & !1);
         // Setup reads and writes the JIT, but the trap hook below needs
         // `&mut self` too, so every JIT borrow stays short-lived: setup here,
         // one slice per loop turn, timing at the end.
@@ -950,10 +1343,86 @@ impl CpuBackend for DynarmicCpu {
                     jit.invalidate_cache_range(pagina * PAGE, PAGE as usize);
                 }
             }
+            // Unhandled CP15 encoding: the callback already halted the JIT.
+            // Report it as an exception at the halting PC, like any other
+            // core fault (the interpretador faults these encodings too).
+            if self.p15.as_mut().is_some_and(|p| std::mem::replace(&mut p.fault, false)) {
+                let pc = self.jit()?.get_pc();
+                self.finaliza_medicao(cronometrar, comeco);
+                return Ok(StopReason::Exception { pc });
+            }
             match self.jit()?.parada.get() {
                 Parada::Nenhuma => {
                     self.finaliza_medicao(cronometrar, comeco);
                     return Ok(StopReason::Budget);
+                }
+                Parada::ArmadilhaMem(destino) => {
+                    self.anota_pc(destino);
+                    // Serving trap: take the hook out (it may arm/disarm
+                    // others), run it with guest memory and registers,
+                    // restore the real bytes, step over them, then re-patch.
+                    // The step runs the restored instruction via the normal
+                    // resume path; re-patching plus invalidation makes the
+                    // next arrival fault again.
+                    let executou_falha = self.jit()?.get_pc() != destino;
+                    let gancho = {
+                        let mut tab = self.armadilhas_mem.borrow_mut();
+                        tab.iter()
+                            .position(|(a, _, _, _)| *a == destino)
+                            .map(|i| tab.remove(i))
+                    };
+                    if let Some((_, thumb, original, mut gancho)) = gancho {
+                        let mut regs = *self.jit()?.get_regs();
+                        {
+                            let mut mem = self.memoria.borrow_mut();
+                            gancho(&mut *mem, &mut regs);
+                        }
+                        self.jit_mut()?.set_regs(regs);
+                        let larg = if thumb { 2 } else { 4 };
+                        let _ = self.memoria.borrow_mut().write(
+                            destino,
+                            &original.to_le_bytes()[..larg as usize],
+                        );
+                        let mut tab = self.armadilhas_mem.borrow_mut();
+                        let pos = tab.partition_point(|(a, _, _, _)| *a < destino);
+                        tab.insert(pos, (destino, thumb, original, gancho));
+                    }
+                    if let Some(parada) = self.passo_sobre_armadilha(destino, executou_falha)? {
+                        self.finaliza_medicao(cronometrar, comeco);
+                        return Ok(parada);
+                    }
+                    // Re-patch so the next arrival faults again (the step's
+                    // resume path invalidated the restored block already).
+                    let repoe = {
+                        let tab = self.armadilhas_mem.borrow();
+                        tab.iter().find(|(a, _, _, _)| *a == destino).map(
+                            |(a, thumb, _, _)| {
+                                (
+                                    *a,
+                                    if *thumb {
+                                        SVC_ARMADILHA_THUMB_INSTR
+                                    } else {
+                                        SVC_ARMADILHA_INSTR
+                                    },
+                                    if *thumb { 2 } else { 4 },
+                                )
+                            },
+                        )
+                    };
+                    if let Some((alvo, svc, larg)) = repoe {
+                        let _ = self.memoria.borrow_mut().write(
+                            alvo,
+                            &svc.to_le_bytes()[..larg as usize],
+                        );
+                        if let Ok(jit) = self.jit_mut() {
+                            jit.invalidate_cache_range(alvo & !(PAGE - 1), PAGE as usize);
+                        }
+                    }
+                    // Same budget enforcement as the single-trap arm above.
+                    if self.jit()?.instrucoes.get() >= limite_externo {
+                        self.finaliza_medicao(cronometrar, comeco);
+                        return Ok(StopReason::Budget);
+                    }
                 }
                 Parada::Armadilha(destino) => {
                     // Observational trap: sample (r0, r1) with nothing
@@ -1055,24 +1524,122 @@ mod tests {
         assert_eq!(cpu.read_reg(Reg::R0), 0x37);
     }
 
+    #[test]
+    fn armadilha_mem_dispara_e_continua() {
+        // mov r0, #1 @0 ; mov r0, #2 @4 ; b . @8, trap at 0x4.
+        let code = [
+            0xe3a0_0001u32.to_le_bytes(),
+            0xe3a0_0002u32.to_le_bytes(),
+            0xeaff_fffeu32.to_le_bytes(),
+        ]
+        .concat();
+        let mut cpu = cpu_with(&code);
+        let visto = std::rc::Rc::new(std::cell::Cell::new(0xFFFF_FFFFu32));
+        let copia = visto.clone();
+        cpu.trap_pc_mem(0x4, move |_mem, regs| {
+            copia.set(regs[0]);
+        });
+        assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Budget);
+        // The hook saw r0 before the trapped instruction ran...
+        assert_eq!(visto.get(), 1);
+        // ...and the real instruction ran after it.
+        assert_eq!(cpu.read_reg(Reg::R0), 2);
+    }
+
+    #[test]
+    fn armadilha_mem_rearma_troca_o_gancho() {
+        let code = [
+            0xe3a0_0001u32.to_le_bytes(),
+            0xe3a0_0002u32.to_le_bytes(),
+            0xeaff_fffeu32.to_le_bytes(),
+        ]
+        .concat();
+        let mut cpu = cpu_with(&code);
+        let visto = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let copia = visto.clone();
+        cpu.trap_pc_mem(0x4, move |_mem, _regs| {
+            copia.set(1);
+        });
+        let copia = visto.clone();
+        cpu.trap_pc_mem(0x4, move |_mem, _regs| {
+            copia.set(2);
+        });
+        assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Budget);
+        assert_eq!(visto.get(), 2);
+        assert_eq!(cpu.read_reg(Reg::R0), 2);
+    }
+
+    #[test]
+    fn desarma_mem_para_de_disparar() {
+        let code = [
+            0xe3a0_0001u32.to_le_bytes(),
+            0xe3a0_0002u32.to_le_bytes(),
+            0xeaff_fffeu32.to_le_bytes(),
+        ]
+        .concat();
+        let mut cpu = cpu_with(&code);
+        let visto = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let copia = visto.clone();
+        cpu.trap_pc_mem(0x4, move |_mem, _regs| {
+            copia.set(copia.get() + 1);
+        });
+        assert_eq!(cpu.run(0, 2).unwrap(), StopReason::Budget);
+        assert_eq!(visto.get(), 1);
+        cpu.untrap_pc_mem(0x4);
+        assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Budget);
+        // Ran again without firing (the counter only moved once).
+        assert_eq!(visto.get(), 1);
+        assert_eq!(cpu.read_reg(Reg::R0), 2);
+    }
+
+    #[test]
+    fn armadilha_thumb_dispara_e_continua() {
+        // Thumb: `movs r0, #1 ; movs r0, #2 ; b .` at 0x100,
+        // trap on the second instruction.
+        let mut code = vec![0u8; 0x100];
+        code.extend_from_slice(&[0x01, 0x20, 0x02, 0x20, 0xfe, 0xe7]);
+        let mut cpu = cpu_with(&code);
+        let visto = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let copia = visto.clone();
+        cpu.trap_pc_mem_thumb(0x102, move |_mem, regs| {
+            copia.set(regs[0]);
+        });
+        assert_eq!(cpu.run(0x101, 10).unwrap(), StopReason::Budget);
+        // The hook saw r0 before the trapped instruction ran...
+        assert_eq!(visto.get(), 1);
+        // ...and the real instruction ran after it.
+        assert_eq!(cpu.read_reg(Reg::R0), 2);
+    }
+
+    #[test]
+    fn falta_demanda_executa_bytes_novos() {
+        // Fetch from unmapped code faults; mapping it afterwards must run
+        // the fresh bytes, not a stale no-execute verdict from the fault.
+        let mut mem = GuestMemory::new();
+        mem.map_zeroed("pilha", 0x2000_0000, 0x1000).unwrap();
+        let mut cpu = DynarmicCpu::new().unwrap();
+        cpu.reset(&mem).unwrap();
+        cpu.write_reg(Reg::Sp, 0x2000_0f00);
+        assert_eq!(
+            cpu.run(0x10000, 10).unwrap(),
+            StopReason::MemoryFault {
+                addr: 0x10000,
+                pc: 0x10000
+            }
+        );
+        // Thumb `movs r0, #42 ; b .`
+        cpu.map_zeroed("codigo", 0x10000, 0x1000).unwrap();
+        cpu.write_mem(0x10000, &[0x2a, 0x20, 0xfe, 0xe7]).unwrap();
+        assert_eq!(cpu.run(0x10001, 100).unwrap(), StopReason::Budget);
+        assert_eq!(cpu.read_reg(Reg::R0), 42);
+    }
+
     /// **One exclusive instruction must not take down the process.**
     ///
-    /// Dynarmic's x64 emitter requires a `global_monitor` **at translation time** for
-    /// LDREX/STREX: `EmitExclusiveReadMemory` does `ASSERT(conf.global_monitor != nullptr)` and then
-    /// dereferences it (`emit_x64_memory.cpp.inc`). The wrapper never filled this field, and
-    /// crate 0.1.3 has no setter (`a32.rs` does `unsafe { std::mem::zeroed() }` with a `todo`), in
-    /// other words: the field is born null. Nothing lowers these instructions when the monitor is missing.
-    ///
-    /// 40 of the 62 `.mod` in the collection contain this pattern somewhere. The test assembles
-    /// `ldrex r0, [r1]` followed by `b .` and runs the block: without a monitor, translation aborts and
-    /// the process dies before the assertion is read.
-    ///
-    /// **Measured, which is why it stays ignored instead of green**: on 24/09/2026 this test killed
-    /// the process with `assertion failed: conf.global_monitor != nullptr` and `signal: 6, SIGABRT`.
-    /// The fix is not ours — it needs a patch in `dynarmic` 0.1.3 (give the
-    /// `global_monitor` field to the public `Config`), and the crate has no setter. With the patch, drop
-    /// the `#[ignore]` and this test becomes the guard.
-    #[ignore = "prova um defeito conhecido da dependência; ver o comentário acima"]
+    /// Dynarmic's x64 emitter requires a `global_monitor` at translation time
+    /// for LDREX/STREX; the wrapper left it null and the process aborted.
+    /// The backend now installs one at `reset`, and this test guards it:
+    /// `ldrex r0, [r1]` followed by `b .`, with r1 on mapped data.
     #[test]
     fn a_instrucao_exclusiva_nao_derruba_o_processo() {
         // `ldrex r0, [r1]` (0xE1910F9F) e `b .` (0xEAFFFFFE).

@@ -63,7 +63,7 @@ pub mod qobject {
         #[cxx_name = "dispensaAbertura"]
         fn dispensa_abertura(self: &Avisos, de_vez: bool);
 
-        /// "O Zeebx 0.4.0 já está disponível…", se há versão nova a avisar; vazio se não.
+        /// "O Dreamyemu 0.4.0 já está disponível…", se há versão nova a avisar; vazio se não.
         #[qinvokable]
         #[cxx_name = "deAtualizacao"]
         fn de_atualizacao(self: &Avisos) -> QString;
@@ -138,8 +138,8 @@ use std::pin::Pin;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QList, QString, QStringList};
 
-use zeebx::ui::atualizacao;
-use zeebx::ui::saves::{self, Save};
+use dreamyemu::ui::atualizacao;
+use dreamyemu::ui::saves::{self, Save};
 
 use super::nucleo;
 
@@ -334,7 +334,7 @@ impl qobject::Log {
             let sugestao = nucleo
                 .caminho_do_relatorio()
                 .and_then(|c| c.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "zeebx.log".to_string());
+                .unwrap_or_else(|| "dreamyemu.log".to_string());
             (nucleo.log(), sugestao)
         });
         let Some(destino) = rfd::FileDialog::new()

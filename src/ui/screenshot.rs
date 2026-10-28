@@ -22,7 +22,7 @@ pub fn pasta(escolhida: Option<&Path>) -> PathBuf {
 ///
 /// Sai o que o Windows recusa, e os pontos e espaços do fim, que ele apaga em silêncio: uma pasta
 /// criada no Linux com `Jogo.` viraria outra ao ser copiada. Um título que não sobra nada vira
-/// `Zeebx`.
+/// `Dreamyemu`.
 pub fn nome_seguro(titulo: &str) -> String {
     let limpo: String = titulo
         .chars()
@@ -35,7 +35,7 @@ pub fn nome_seguro(titulo: &str) -> String {
     let limpo = limpo.split_whitespace().collect::<Vec<_>>().join(" ");
     let limpo = limpo.trim_end_matches(['.', ' ']);
     match limpo.is_empty() {
-        true => "Zeebx".to_string(),
+        true => "Dreamyemu".to_string(),
         false => limpo.to_string(),
     }
 }
@@ -126,13 +126,13 @@ mod tests {
         assert_eq!(nome_seguro("A/B\\C?*"), "A B C");
         assert_eq!(nome_seguro("Jogo..."), "Jogo");
         assert_eq!(nome_seguro("Zeebo Extreme Bóia Cross"), "Zeebo Extreme Bóia Cross");
-        assert_eq!(nome_seguro(" :?. "), "Zeebx");
+        assert_eq!(nome_seguro(" :?. "), "Dreamyemu");
         assert_eq!(nome_seguro("2026-09-25 14-03-07"), "2026-09-25 14-03-07");
     }
 
     #[test]
     fn dois_prints_no_mesmo_segundo_nao_se_sobrescrevem() {
-        let raiz = std::env::temp_dir().join(format!("zeebx-testes-screenshot-{}", std::process::id()));
+        let raiz = std::env::temp_dir().join(format!("dreamyemu-testes-screenshot-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&raiz);
         let preto = vec![0u8; 4 * 3 * 3];
         let primeiro = grava(&raiz, "Quake", "2026-09-25 14-03-07", 4, 3, &preto).unwrap();
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn um_quadro_curto_nao_deixa_arquivo_pela_metade() {
-        let raiz = std::env::temp_dir().join(format!("zeebx-testes-screenshot-curto-{}", std::process::id()));
+        let raiz = std::env::temp_dir().join(format!("dreamyemu-testes-screenshot-curto-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&raiz);
         assert!(grava(&raiz, "Quake", "agora", 4, 3, &[0u8; 5]).is_err());
         assert_eq!(std::fs::read_dir(raiz.join("Quake")).unwrap().count(), 0);

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Instala Zeebx em ArkOS/AeolusUX/dArkOS/dArkOSen.
+"""Instala Dreamyemu em ArkOS/AeolusUX/dArkOS/dArkOSen.
 
 Exemplo:
   python3 ferramentas/instala_arkos.py --rootfs /media/$USER/root --roms /media/$USER/EASYROMS \\
-    --core zeebx_libretro.so --info zeebx_libretro.info \\
+    --core dreamyemu_libretro.so --info dreamyemu_libretro.info \\
     --soundfont GeneralUser-GS.sf2 --rom 'Double Dragon (Brazil) (Es,Pt).zip'
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ ENTRY = """\t<system>
 \t\t<fullname>Zeebo</fullname>
 \t\t<path>/roms/zeebo/</path>
 \t\t<extension>.mod .MOD .zip .ZIP .7z .7Z</extension>
-\t\t<command>sudo perfmax %GOVERNOR% %ROM%; nice -n -19 /usr/local/bin/retroarch -L /home/ark/.config/retroarch/cores/zeebx_libretro.so %ROM%; sudo perfnorm</command>
+\t\t<command>sudo perfmax %GOVERNOR% %ROM%; nice -n -19 /usr/local/bin/retroarch -L /home/ark/.config/retroarch/cores/dreamyemu_libretro.so %ROM%; sudo perfnorm</command>
 \t\t<platform>zeebo</platform>
 \t\t<theme>zeebo</theme>
 \t\t<manufacturer>Zeebo Inc.</manufacturer>
@@ -45,7 +45,7 @@ def backup(path, rootfs):
         # EASYROMS é outra partição: preserve pelo menos pasta final + nome, sem tentar escrever
         # fora da árvore de backup nem colidir com um arquivo homônimo do ROOTFS.
         relativo = pathlib.Path("external") / path.parent.name / path.name
-    out = rootfs / "zeebx-backup" / stamp / relativo
+    out = rootfs / "dreamyemu-backup" / stamp / relativo
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, out)
     return out
@@ -79,8 +79,8 @@ def main():
     if args.core.stat().st_size < 100_000 or args.core.read_bytes()[:4] != b"\x7fELF":
         print("--core não parece ELF válido", file=sys.stderr)
         return 2
-    core_dst = rootfs / "home/ark/.config/retroarch/cores/zeebx_libretro.so"
-    info_dst = rootfs / "home/ark/.config/retroarch/cores/zeebx_libretro.info"
+    core_dst = rootfs / "home/ark/.config/retroarch/cores/dreamyemu_libretro.so"
+    info_dst = rootfs / "home/ark/.config/retroarch/cores/dreamyemu_libretro.info"
     es_paths = [rootfs / "etc/emulationstation/es_systems.cfg"]
     user_es = rootfs / "home/ark/.emulationstation/es_systems.cfg"
     if user_es.is_file():
@@ -88,8 +88,8 @@ def main():
     template_es = rootfs / "usr/local/bin/es_systems.cfg"
     if template_es.is_file():
         es_paths.append(template_es)
-    sf_dst = romroot / "bios/zeebx/aparelho/soundfonts/GeneralUser-GS.sf2"
-    font_dst = romroot / "bios/zeebx/aparelho/shared/fonts/tectoy.ttf"
+    sf_dst = romroot / "bios/dreamyemu/aparelho/soundfonts/GeneralUser-GS.sf2"
+    font_dst = romroot / "bios/dreamyemu/aparelho/shared/fonts/tectoy.ttf"
     for p in [core_dst, info_dst, *es_paths, sf_dst, font_dst]:
         old = backup(p, rootfs)
         if old:

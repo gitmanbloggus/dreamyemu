@@ -132,8 +132,8 @@ impl<C: CpuBackend> Machine<C> {
             "GetError" => answer = Some((0, gles::GL_NO_ERROR)),
             "GetString" => {
                 let text = match a[0] {
-                    gles::GL_VENDOR => "Zeebx",
-                    gles::GL_RENDERER => "Zeebx Software Rasterizer",
+                    gles::GL_VENDOR => "Dreamyemu",
+                    gles::GL_RENDERER => "Dreamyemu Software Rasterizer",
                     gles::GL_VERSION => "OpenGL ES-CM 1.1",
                     // Só o que existe de verdade. Anunciar extensão que não temos faria o jogo
                     // chamar função que não existe — e omitir uma que temos é pior ainda: os

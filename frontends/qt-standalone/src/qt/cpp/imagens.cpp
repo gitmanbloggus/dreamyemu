@@ -2,7 +2,7 @@
 
 #include <QtQuick/QQuickImageProvider>
 
-namespace zeebx {
+namespace dreamyemu {
 
 namespace {
 
@@ -37,7 +37,7 @@ private:
 void registra_imagens(QQmlEngine &engine, rust::Fn<QImage(rust::Str)> fonte)
 {
     // O engine fica com o provedor e o apaga ao sair.
-    engine.addImageProvider(QStringLiteral("zeebx"), new ProvedorDeImagens(fonte));
+    engine.addImageProvider(QStringLiteral("dreamyemu"), new ProvedorDeImagens(fonte));
 }
 
-} // namespace zeebx
+} // namespace dreamyemu

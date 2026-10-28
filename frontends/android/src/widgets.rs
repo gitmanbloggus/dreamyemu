@@ -5,7 +5,7 @@
 //! polegar acertar sem mirar. É a diferença entre uma janela de desktop encolhida e uma tela
 //! feita para a mão.
 //!
-//! **As dicas ficam escondidas.** Os textos de ajuda do Zeebx são longos — alguns têm cinco
+//! **As dicas ficam escondidas.** Os textos de ajuda do Dreamyemu são longos — alguns têm cinco
 //! linhas — e todos abertos ao mesmo tempo viram uma parede cinza em que não se acha mais o
 //! que se procurava. Cada linha mostra um `?`; quem quer a explicação toca nele, e ela abre ali
 //! mesmo. Quem já sabe vê uma lista de nomes e valores.

@@ -1,8 +1,8 @@
 #!/bin/sh
-# Mede o Zeebx no aparelho e junta tudo num pacote de log.
+# Mede o Dreamyemu no aparelho e junta tudo num pacote de log.
 #
-# Uso:   sh testa_zeebx.sh [segundos_por_rodada] [pasta_das_roms]
-#        sh testa_zeebx.sh 20 /roms/zeebo
+# Uso:   sh testa_dreamyemu.sh [segundos_por_rodada] [pasta_das_roms]
+#        sh testa_dreamyemu.sh 20 /roms/zeebo
 #
 # Cada rodada roda um numero fixo de quadros e mede o tempo de parede: quadros por segundo de
 # verdade. O log de cada rodada fica junto, e o resumo diz, por rodada, QUAL ajuste o nucleo
@@ -13,7 +13,7 @@ set -u
 SEG=${1:-20}
 ROMDIR=${2:-}
 AQUI=$(cd "$(dirname "$0")" && pwd)
-SAIDA="$AQUI/logs-zeebx-$(date +%Y%m%d-%H%M%S)"
+SAIDA="$AQUI/logs-dreamyemu-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$SAIDA"
 RESUMO="$SAIDA/resumo.txt"
 : > "$RESUMO"
@@ -57,11 +57,11 @@ CFG=$(echo "$DIRS" | awk '{print $1}')
 [ -n "$CFG" ] || CFG="$HOME/.config/retroarch"
 
 CORE=""
-for c in "$AQUI/zeebx_libretro.so" "$CFG/cores/zeebx_libretro.so" \
-         "/opt/muos/share/core/zeebx_libretro.so" /usr/lib/libretro/zeebx_libretro.so; do
+for c in "$AQUI/dreamyemu_libretro.so" "$CFG/cores/dreamyemu_libretro.so" \
+         "/opt/muos/share/core/dreamyemu_libretro.so" /usr/lib/libretro/dreamyemu_libretro.so; do
     [ -f "$c" ] && CORE="$c" && break
 done
-[ -n "$CORE" ] || { fala "CORE: nao achei o zeebx_libretro.so"; exit 1; }
+[ -n "$CORE" ] || { fala "CORE: nao achei o dreamyemu_libretro.so"; exit 1; }
 
 # No muOS os jogos vao no **cartao de ROMs** (SD2), e o sistema de conteudo e um unionfs: o que
 # vale e `/mnt/union/ROMS`, que junta USB, SDCARD e o cartao do sistema nessa ordem. Procurar pelo
@@ -91,13 +91,13 @@ fi
 
 # ------------------------------------------------------------------ as opcoes do core
 
-# **As opcoes do Zeebx vivem em dois arquivos, e o aparelho usa o global.** Com
+# **As opcoes do Dreamyemu vivem em dois arquivos, e o aparelho usa o global.** Com
 # `global_core_options = true` (o padrao do ArkOS) o RetroArch le e escreve tudo em
 # `retroarch-core-options.cfg`; o `.opt` por core so vale com a opcao desligada. Escrever nos dois
 # e o que faz o teste valer nos dois arranjos -- e, se so um valesse, as rodadas sairiam todas
 # iguais e a comparacao nao diria nada.
 ANTES="$SAIDA/opcoes-antes"
-NOVAS="$SAIDA/zeebx-da-rodada.cfg"
+NOVAS="$SAIDA/dreamyemu-da-rodada.cfg"
 
 salva_opcoes() {
     mkdir -p "$ANTES"
@@ -105,7 +105,7 @@ salva_opcoes() {
     for d in $DIRS; do
         n=$((n + 1))
         [ -f "$d/retroarch-core-options.cfg" ] && cp "$d/retroarch-core-options.cfg" "$ANTES/global-$n.cfg"
-        [ -f "$d/config/Zeebx/Zeebx.opt" ] && cp "$d/config/Zeebx/Zeebx.opt" "$ANTES/core-$n.opt"
+        [ -f "$d/config/Dreamyemu/Dreamyemu.opt" ] && cp "$d/config/Dreamyemu/Dreamyemu.opt" "$ANTES/core-$n.opt"
     done
     return 0
 }
@@ -114,7 +114,7 @@ devolve_opcoes() {
     for d in $DIRS; do
         n=$((n + 1))
         [ -f "$ANTES/global-$n.cfg" ] && cp "$ANTES/global-$n.cfg" "$d/retroarch-core-options.cfg"
-        if [ -f "$ANTES/core-$n.opt" ]; then cp "$ANTES/core-$n.opt" "$d/config/Zeebx/Zeebx.opt"; fi
+        if [ -f "$ANTES/core-$n.opt" ]; then cp "$ANTES/core-$n.opt" "$d/config/Dreamyemu/Dreamyemu.opt"; fi
     done
     return 0
 }
@@ -138,25 +138,25 @@ opcoes() {
         esac
     done
     : > "$NOVAS"
-    poe zeebx_perfil "$perfil"
-    poe zeebx_rasterizador "$rast"
-    poe zeebx_resolucao_interna "$escala"
-    poe zeebx_descarte_de_tiles "$tiles"
-    poe zeebx_frameskip "$pulo"
-    poe zeebx_limite_fps "$fps"
-    poe zeebx_log "$nivel"
+    poe dreamyemu_perfil "$perfil"
+    poe dreamyemu_rasterizador "$rast"
+    poe dreamyemu_resolucao_interna "$escala"
+    poe dreamyemu_descarte_de_tiles "$tiles"
+    poe dreamyemu_frameskip "$pulo"
+    poe dreamyemu_limite_fps "$fps"
+    poe dreamyemu_log "$nivel"
     # Em cada diretorio encontrado: o global (preservando as opcoes dos outros cores, que o
-    # arquivo guarda todas) e o `.opt` do Zeebx.
+    # arquivo guarda todas) e o `.opt` do Dreamyemu.
     escreveu=0
     for d in $DIRS; do
         g="$d/retroarch-core-options.cfg"
         if [ -f "$g" ]; then
-            { grep -v '^zeebx_' "$g" 2>/dev/null; cat "$NOVAS"; } > "$SAIDA/global.tmp"
+            { grep -v '^dreamyemu_' "$g" 2>/dev/null; cat "$NOVAS"; } > "$SAIDA/global.tmp"
             cp "$SAIDA/global.tmp" "$g" 2>/dev/null && escreveu=1
             rm -f "$SAIDA/global.tmp"
         fi
-        mkdir -p "$d/config/Zeebx" 2>/dev/null
-        cp "$NOVAS" "$d/config/Zeebx/Zeebx.opt" 2>/dev/null && escreveu=1
+        mkdir -p "$d/config/Dreamyemu" 2>/dev/null
+        cp "$NOVAS" "$d/config/Dreamyemu/Dreamyemu.opt" 2>/dev/null && escreveu=1
     done
     if [ "$escreveu" = 0 ]; then
         fala "ATENCAO: nao deu para escrever as opcoes em nenhum destino ($DIRS)."
@@ -207,7 +207,7 @@ roda() {
 
 # ------------------------------------------------------------------ o cabecalho
 
-fala "Zeebx: teste no aparelho $(date)"
+fala "Dreamyemu: teste no aparelho $(date)"
 fala "retroarch: $RA"
 fala "config:    ${CFG:-(nao achei)}"
 fala "core:      $CORE"
@@ -227,8 +227,8 @@ fala "----------------------------------------"
     echo "== opcoes antes =="
     for d in $DIRS; do
         echo "-- $d"
-        grep '^zeebx_' "$d/retroarch-core-options.cfg" 2>/dev/null
-        cat "$d/config/Zeebx/Zeebx.opt" 2>/dev/null
+        grep '^dreamyemu_' "$d/retroarch-core-options.cfg" 2>/dev/null
+        cat "$d/config/Dreamyemu/Dreamyemu.opt" 2>/dev/null
     done
     echo "== gpu =="; cat /sys/class/drm/card*/device/uevent 2>/dev/null | head -6
     dmesg 2>/dev/null | grep -iE 'mali|panfrost|drm' | tail -6

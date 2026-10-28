@@ -1,6 +1,6 @@
-//! O Zeebx no iOS: a mesma sessão, outra tela.
+//! O Dreamyemu no iOS: a mesma sessão, outra tela.
 //!
-//! Quem emula é a [`zeebx::session::Session`]. Este arquivo é a fronteira com a UIKit: a Swift
+//! Quem emula é a [`dreamyemu::session::Session`]. Este arquivo é a fronteira com a UIKit: a Swift
 //! pede uma varredura, um passo e um quadro, e devolve botão. A janela, o toque e o controle
 //! de verdade ficam no projeto Xcode, porque é ele quem tem o ciclo de vida do UIKit.
 //!
@@ -16,12 +16,12 @@ use std::path::PathBuf;
 use std::ptr;
 use std::time::Instant;
 
-use zeebx::input::{self, Pad};
-use zeebx::library;
-use zeebx::session::{self, FATIA_MAXIMA, Session, Step};
-use zeebx::storage::StoragePaths;
+use dreamyemu::input::{self, Pad};
+use dreamyemu::library;
+use dreamyemu::session::{self, FATIA_MAXIMA, Session, Step};
+use dreamyemu::storage::StoragePaths;
 
-/// Os mesmos números de `include/zeebx_ios.h`. O teste abaixo confere o que dá para conferir
+/// Os mesmos números de `include/dreamyemu_ios.h`. O teste abaixo confere o que dá para conferir
 /// deste lado; o header é o que a Swift inclui.
 const SEM_SESSAO: i32 = -1;
 const QUADRO: i32 = 0;
@@ -115,7 +115,7 @@ fn aplicativo<'a>(ptr: *mut Aplicativo) -> Option<&'a mut Aplicativo> {
     if ptr.is_null() {
         None
     } else {
-        // O ponteiro é o que `zeebx_ios_cria` devolveu e que `zeebx_ios_destroi` ainda não
+        // O ponteiro é o que `dreamyemu_ios_cria` devolveu e que `dreamyemu_ios_destroi` ainda não
         // consumiu. A Swift o usa de uma linha só.
         Some(unsafe { &mut *ptr })
     }
@@ -133,7 +133,7 @@ fn c_string(ptr: *const c_char) -> Option<String> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_cria(
+pub extern "C" fn dreamyemu_ios_cria(
     documentos: *const c_char,
     suporte: *const c_char,
 ) -> *mut Aplicativo {
@@ -180,19 +180,19 @@ pub extern "C" fn zeebx_ios_cria(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_destroi(app: *mut Aplicativo) {
+pub extern "C" fn dreamyemu_ios_destroi(app: *mut Aplicativo) {
     if !app.is_null() {
         drop(unsafe { Box::from_raw(app) });
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_varre(app: *mut Aplicativo) -> i32 {
+pub extern "C" fn dreamyemu_ios_varre(app: *mut Aplicativo) -> i32 {
     aplicativo(app).map(|app| app.varre()).unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_titulo(app: *mut Aplicativo, indice: i32) -> *const c_char {
+pub extern "C" fn dreamyemu_ios_titulo(app: *mut Aplicativo, indice: i32) -> *const c_char {
     let Some(app) = aplicativo(app) else {
         return ptr::null();
     };
@@ -206,7 +206,7 @@ pub extern "C" fn zeebx_ios_titulo(app: *mut Aplicativo, indice: i32) -> *const 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_comeca(app: *mut Aplicativo, indice: i32) -> i32 {
+pub extern "C" fn dreamyemu_ios_comeca(app: *mut Aplicativo, indice: i32) -> i32 {
     let Some(app) = aplicativo(app) else {
         return -1;
     };
@@ -229,8 +229,8 @@ pub extern "C" fn zeebx_ios_comeca(app: *mut Aplicativo, indice: i32) -> i32 {
     // contexto de GL do núcleo pede EGL, e aqui não há.
     match Session::start_software_with_storage_installed(
         &caminho,
-        zeebx::PORTAS_PADRAO,
-        zeebx::config::ZWheel::default(),
+        dreamyemu::PORTAS_PADRAO,
+        dreamyemu::config::ZWheel::default(),
         &app.storage,
         &instalados,
     ) {
@@ -256,7 +256,7 @@ pub extern "C" fn zeebx_ios_comeca(app: *mut Aplicativo, indice: i32) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_para(app: *mut Aplicativo) {
+pub extern "C" fn dreamyemu_ios_para(app: *mut Aplicativo) {
     let Some(app) = aplicativo(app) else {
         return;
     };
@@ -269,7 +269,7 @@ pub extern "C" fn zeebx_ios_para(app: *mut Aplicativo) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_passo(app: *mut Aplicativo) -> i32 {
+pub extern "C" fn dreamyemu_ios_passo(app: *mut Aplicativo) -> i32 {
     let Some(app) = aplicativo(app) else {
         return SEM_SESSAO;
     };
@@ -340,7 +340,7 @@ pub extern "C" fn zeebx_ios_passo(app: *mut Aplicativo) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_quadro(
+pub extern "C" fn dreamyemu_ios_quadro(
     app: *mut Aplicativo,
     largura: *mut u32,
     altura: *mut u32,
@@ -361,7 +361,7 @@ pub extern "C" fn zeebx_ios_quadro(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_botao(app: *mut Aplicativo, indice: u32, apertado: i32) {
+pub extern "C" fn dreamyemu_ios_botao(app: *mut Aplicativo, indice: u32, apertado: i32) {
     let Some(app) = aplicativo(app) else {
         return;
     };
@@ -373,7 +373,7 @@ pub extern "C" fn zeebx_ios_botao(app: *mut Aplicativo, indice: u32, apertado: i
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_eixo(app: *mut Aplicativo, indice: u32, valor: i32) {
+pub extern "C" fn dreamyemu_ios_eixo(app: *mut Aplicativo, indice: u32, valor: i32) {
     let Some(app) = aplicativo(app) else {
         return;
     };
@@ -381,7 +381,7 @@ pub extern "C" fn zeebx_ios_eixo(app: *mut Aplicativo, indice: u32, valor: i32) 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_botao_por_nome(nome: *const c_char) -> i32 {
+pub extern "C" fn dreamyemu_ios_botao_por_nome(nome: *const c_char) -> i32 {
     let Some(nome) = c_string(nome) else {
         return -1;
     };
@@ -391,7 +391,7 @@ pub extern "C" fn zeebx_ios_botao_por_nome(nome: *const c_char) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zeebx_ios_erro(app: *mut Aplicativo) -> *const c_char {
+pub extern "C" fn dreamyemu_ios_erro(app: *mut Aplicativo) -> *const c_char {
     aplicativo(app)
         .map(|app| app.erro.as_ptr())
         .unwrap_or(ptr::null())
@@ -415,28 +415,28 @@ mod tests {
 
     #[test]
     fn ponteiro_nulo_nao_cria() {
-        assert!(zeebx_ios_cria(ptr::null(), ptr::null()).is_null());
+        assert!(dreamyemu_ios_cria(ptr::null(), ptr::null()).is_null());
         let vazio = CString::new("").unwrap();
-        assert!(zeebx_ios_cria(vazio.as_ptr(), vazio.as_ptr()).is_null());
+        assert!(dreamyemu_ios_cria(vazio.as_ptr(), vazio.as_ptr()).is_null());
     }
 
     #[test]
     fn os_nomes_dos_botoes_seguem_o_controle() {
-        assert_eq!(zeebx_ios_botao_por_nome(c"b1".as_ptr()), 0);
+        assert_eq!(dreamyemu_ios_botao_por_nome(c"b1".as_ptr()), 0);
         assert_eq!(
-            zeebx_ios_botao_por_nome(c"up".as_ptr()) as usize,
+            dreamyemu_ios_botao_por_nome(c"up".as_ptr()) as usize,
             Pad::button_by_name("up").unwrap()
         );
         assert_eq!(
-            zeebx_ios_botao_por_nome(c"home".as_ptr()),
-            zeebx_ios_botao_por_nome(c"back".as_ptr())
+            dreamyemu_ios_botao_por_nome(c"home".as_ptr()),
+            dreamyemu_ios_botao_por_nome(c"back".as_ptr())
         );
-        assert_eq!(zeebx_ios_botao_por_nome(ptr::null()), -1);
-        assert_eq!(zeebx_ios_botao_por_nome(c"nao-existe".as_ptr()), -1);
+        assert_eq!(dreamyemu_ios_botao_por_nome(ptr::null()), -1);
+        assert_eq!(dreamyemu_ios_botao_por_nome(c"nao-existe".as_ptr()), -1);
     }
 
     fn pasta_de_teste(nome: &str) -> (PathBuf, CString, CString) {
-        let raiz = std::env::temp_dir().join(format!("zeebx-ios-{nome}-{}", std::process::id()));
+        let raiz = std::env::temp_dir().join(format!("dreamyemu-ios-{nome}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&raiz);
         let documentos = raiz.join("Documents");
         let suporte = raiz.join("Library/Application Support");
@@ -450,18 +450,18 @@ mod tests {
     #[test]
     fn pasta_vazia_lista_zero_e_nao_comeca_jogo() {
         let (raiz, documentos, suporte) = pasta_de_teste("vazia");
-        let app = zeebx_ios_cria(documentos.as_ptr(), suporte.as_ptr());
+        let app = dreamyemu_ios_cria(documentos.as_ptr(), suporte.as_ptr());
         assert!(!app.is_null());
-        assert_eq!(zeebx_ios_varre(app), 0);
-        assert!(zeebx_ios_titulo(app, 0).is_null());
-        assert_eq!(zeebx_ios_comeca(app, 0), -1);
-        assert!(!zeebx_ios_erro(app).is_null());
-        assert_eq!(zeebx_ios_passo(app), SEM_SESSAO);
-        assert!(zeebx_ios_quadro(app, ptr::null_mut(), ptr::null_mut()).is_null());
-        zeebx_ios_botao(app, 0, 1);
-        zeebx_ios_eixo(app, 0, 40);
-        zeebx_ios_para(app);
-        zeebx_ios_destroi(app);
+        assert_eq!(dreamyemu_ios_varre(app), 0);
+        assert!(dreamyemu_ios_titulo(app, 0).is_null());
+        assert_eq!(dreamyemu_ios_comeca(app, 0), -1);
+        assert!(!dreamyemu_ios_erro(app).is_null());
+        assert_eq!(dreamyemu_ios_passo(app), SEM_SESSAO);
+        assert!(dreamyemu_ios_quadro(app, ptr::null_mut(), ptr::null_mut()).is_null());
+        dreamyemu_ios_botao(app, 0, 1);
+        dreamyemu_ios_eixo(app, 0, 40);
+        dreamyemu_ios_para(app);
+        dreamyemu_ios_destroi(app);
         let _ = std::fs::remove_dir_all(raiz);
     }
 }

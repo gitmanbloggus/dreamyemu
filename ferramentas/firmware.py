@@ -19,7 +19,7 @@ sai como uma sequência de `strb`/`movs` sem sentido, é o outro modo — ou é 
 acontece: os ponteiros das tabelas de log apontam para strings, e desmontá-las dá um código
 plausível e falso.
 
-O caminho do firmware sai de `ZEEBX_FIRMWARE` ou do padrão em `vendor/`.
+O caminho do firmware sai de `DREAMYEMU_FIRMWARE` ou do padrão em `vendor/`.
 """
 
 import os
@@ -224,7 +224,7 @@ def main():
     if len(sys.argv) < 3:
         print(__doc__)
         return
-    data = pathlib.Path(os.environ.get("ZEEBX_FIRMWARE", PADRAO)).read_bytes()
+    data = pathlib.Path(os.environ.get("DREAMYEMU_FIRMWARE", PADRAO)).read_bytes()
     segs = segmentos(data)
 
     if sys.argv[1] == "refs":

@@ -5,7 +5,7 @@
 //! e cada uma cabe numa linha. A dependência custaria mais para auditar do que este arquivo
 //! inteiro.
 //!
-//! [`config_dir`]: zeebx::ui::settings::config_dir
+//! [`config_dir`]: dreamyemu::ui::settings::config_dir
 
 use std::collections::BTreeMap;
 

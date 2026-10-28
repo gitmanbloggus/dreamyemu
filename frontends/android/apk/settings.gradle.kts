@@ -12,5 +12,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Zeebx"
+rootProject.name = "Dreamyemu"
 include(":app")

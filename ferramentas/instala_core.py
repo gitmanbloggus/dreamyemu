@@ -16,7 +16,7 @@ E para o **cartão do muOS**, que tem outra arrumação (o lançador chama
     python3 ferramentas/instala_core.py --muos /media/$USER/ROOTFS
     python3 ferramentas/instala_core.py --muos /media/$USER/ROOTFS --banco Banco.sf2
     python3 ferramentas/instala_core.py --muos /media/$USER/ROOTFS \
-      --so zeebx_libretro.so --info zeebx_libretro.info --banco GeneralUser-GS.sf2
+      --so dreamyemu_libretro.so --info dreamyemu_libretro.info --banco GeneralUser-GS.sf2
 """
 
 import argparse
@@ -25,8 +25,8 @@ import shutil
 import sys
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
-ORIGEM_INFO = RAIZ / "frontends" / "libretro" / "zeebx_libretro.info"
-NOMES = ("libzeebx_libretro.so", "zeebx_libretro.so")
+ORIGEM_INFO = RAIZ / "frontends" / "libretro" / "dreamyemu_libretro.info"
+NOMES = ("libdreamyemu_libretro.so", "dreamyemu_libretro.so")
 
 
 def acha_perfil():
@@ -58,8 +58,8 @@ def acha_so(release):
 
 SISTEMA = "Zeebo"
 CHAVE = "zeebo"
-BANCO_RELATIVO = pathlib.Path("emulator/retroarch/system/zeebx/aparelho/soundfonts")
-FONTE_RELATIVA = pathlib.Path("emulator/retroarch/system/zeebx/aparelho/shared/fonts/tectoy.ttf")
+BANCO_RELATIVO = pathlib.Path("emulator/retroarch/system/dreamyemu/aparelho/soundfonts")
+FONTE_RELATIVA = pathlib.Path("emulator/retroarch/system/dreamyemu/aparelho/shared/fonts/tectoy.ttf")
 
 
 def instala_no_muos(raiz, origem_so, origem_info, banco, fonte, roms_raiz, roms):
@@ -77,7 +77,7 @@ def instala_no_muos(raiz, origem_so, origem_info, banco, fonte, roms_raiz, roms)
     import datetime
 
     guarda = raiz / f"opt/muos/share/core/backup-{datetime.datetime.now():%Y%m%d-%H%M%S}"
-    alvo_so = share / "core/zeebx_libretro.so"
+    alvo_so = share / "core/dreamyemu_libretro.so"
     if alvo_so.is_file():
         guarda.mkdir(parents=True, exist_ok=True)
         shutil.copy2(alvo_so, guarda / alvo_so.name)
@@ -85,7 +85,7 @@ def instala_no_muos(raiz, origem_so, origem_info, banco, fonte, roms_raiz, roms)
 
     shutil.copy(origem_so, alvo_so)
     alvo_so.chmod(0o755)
-    info = share / "emulator/retroarch/info/zeebx_libretro.info"
+    info = share / "emulator/retroarch/info/dreamyemu_libretro.info"
     info.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(origem_info, info)
     print(f"core:  {alvo_so} ({alvo_so.stat().st_size} bytes)")
@@ -96,13 +96,13 @@ def instala_no_muos(raiz, origem_so, origem_info, banco, fonte, roms_raiz, roms)
     assign = share / f"info/assign/{SISTEMA}"
     assign.mkdir(parents=True, exist_ok=True)
     (assign / "global.ini").write_text(
-        f"[global]\nname={SISTEMA}\ndefault=zeebx\ncatalogue=Mobile - {SISTEMA}\n"
+        f"[global]\nname={SISTEMA}\ndefault=dreamyemu\ncatalogue=Mobile - {SISTEMA}\n"
         "lookup=0\ngovernor=performance\n\n[friendly]\n"
         f"{CHAVE}\n",
         encoding="utf-8",
     )
-    (assign / "zeebx.ini").write_text(
-        "[zeebx]\nname=Zeebx\ncore=zeebx_libretro.so\n\n[launch]\nprep=\n"
+    (assign / "dreamyemu.ini").write_text(
+        "[dreamyemu]\nname=Dreamyemu\ncore=dreamyemu_libretro.so\n\n[launch]\nprep=\n"
         "exec=/opt/muos/script/launch/lr-general.sh\ndone=\n",
         encoding="utf-8",
     )
@@ -206,7 +206,7 @@ def main():
     origem_so = args.so or acha_so(args.release)
     origem_info = args.info or ORIGEM_INFO
     if origem_so is None or not pathlib.Path(origem_so).is_file():
-        print("não achou o core compilado; use --so zeebx_libretro.so ou faça um build local", file=sys.stderr)
+        print("não achou o core compilado; use --so dreamyemu_libretro.so ou faça um build local", file=sys.stderr)
         return 1
     if not pathlib.Path(origem_info).is_file():
         print(f"não achou {origem_info}", file=sys.stderr)
@@ -217,8 +217,8 @@ def main():
 
     destino = args.destino or (acha_perfil() / "cores")
     destino.mkdir(parents=True, exist_ok=True)
-    alvo_so = destino / "zeebx_libretro.so"
-    alvo_info = destino / "zeebx_libretro.info"
+    alvo_so = destino / "dreamyemu_libretro.so"
+    alvo_info = destino / "dreamyemu_libretro.info"
 
     # Avisa quando o `.info` que está lá é diferente do que vai entrar: é o caso que quebrou o
     # scan uma vez, e um aviso no console custa menos que descobrir pelo sintoma.
@@ -229,7 +229,7 @@ def main():
     shutil.copy(origem_info, alvo_info)
     print(f"core:  {alvo_so}  ({origem_so.stat().st_size} bytes, {origem_so.parent.name})")
     print(f"info:  {alvo_info}")
-    print("\nabra o RetroArch e escolha o core Zeebx; o banco No-Intro sai do campo `database` daqui")
+    print("\nabra o RetroArch e escolha o core Dreamyemu; o banco No-Intro sai do campo `database` daqui")
     return 0
 
 

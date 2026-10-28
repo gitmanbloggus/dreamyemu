@@ -7,7 +7,7 @@
 //! que chega é o que o Android mandou: `Keycode::ButtonA`, `Axis::X`, o gatilho, o "voltar".
 //!
 //! O mapa de botões é o mesmo que o desktop dá a um controle moderno
-//! ([`zeebx::input::bindings::Player::with_gamepad`]), e casa por **posição** — no aparelho o 1
+//! ([`dreamyemu::input::bindings::Player::with_gamepad`]), e casa por **posição** — no aparelho o 1
 //! fica embaixo, o 2 à esquerda, o 3 no topo e o 4 à direita (issue #41): sul no `b1`, oeste no
 //! `b2`, norte no `b3`, leste no `b4`, os gatilhos superiores no `zl`/`zr` e o Start no `back` —
 //! o controle do Zeebo não tem Start, quem ocupa o lugar dele é o HOME.
@@ -16,7 +16,7 @@ use android_activity::input::{
     Axis, InputEvent, KeyAction, Keycode, MotionAction, Source, ToolType,
 };
 
-use zeebx::input::{self, AXIS_CURSO, Pad};
+use dreamyemu::input::{self, AXIS_CURSO, Pad};
 
 use crate::toque::Sobreposicao;
 
@@ -31,7 +31,7 @@ const ZONA_MORTA: f32 = 0.12;
 /// empurra até o fim.
 const LIMIAR_DA_SETA: f32 = 0.6;
 
-/// As setas do egui na ordem de [`zeebx::input::DPAD`]: cima, baixo, esquerda, direita.
+/// As setas do egui na ordem de [`dreamyemu::input::DPAD`]: cima, baixo, esquerda, direita.
 const SETAS: [egui::Key; 4] = [
     egui::Key::ArrowUp,
     egui::Key::ArrowDown,
@@ -70,7 +70,7 @@ pub struct Entrada {
 }
 
 /// Os botões do controle físico: o código do Android, o nome que o desktop dá ao mesmo botão
-/// (o do `gilrs`, ver `zeebx::input::gamepads`) e o índice do [`Pad`] que ele aperta.
+/// (o do `gilrs`, ver `dreamyemu::input::gamepads`) e o índice do [`Pad`] que ele aperta.
 ///
 /// **O nome é o do desktop de propósito**: um atalho gravado como `Source::button("LeftThumb")`
 /// vale nos dois frontends, e o mesmo `settings.json` pode ir de um para o outro.

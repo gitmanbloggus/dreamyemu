@@ -130,7 +130,7 @@ impl Rewind {
             let anel = Arc::clone(&anel);
             let ocupada = Arc::clone(&ocupada);
             std::thread::Builder::new()
-                .name("zeebx-rewind".to_string())
+                .name("dreamyemu-rewind".to_string())
                 .spawn(move || comprime_para_sempre(recebe, anel, ocupada))
                 .ok()
         };

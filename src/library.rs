@@ -558,7 +558,7 @@ mod tests {
 
     /// Monta uma árvore de arquivos vazios e devolve a raiz.
     fn tree(name: &str, files: &[&str]) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("zeebx-testes-{name}"));
+        let root = std::env::temp_dir().join(format!("dreamyemu-testes-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         for file in files {
             let path = root.join(file);
@@ -694,7 +694,7 @@ mod tests {
 
     #[test]
     fn pasta_que_nao_existe_devolve_lista_vazia() {
-        let games = scan(&std::env::temp_dir().join("zeebx-nao-existe-mesmo"));
+        let games = scan(&std::env::temp_dir().join("dreamyemu-nao-existe-mesmo"));
         assert!(games.is_empty());
     }
 }

@@ -4,7 +4,7 @@
 //! rede. A tag pode vir como `0.1.0` ou `v0.1.0`.
 //!
 //! **Não é `releases/latest`.** O GitHub deixa pré-lançamentos de fora do `latest`, e todas as
-//! releases do Zeebx saíram assim até a 0.4.1: a resposta era 404, que virava "em dia", e ninguém
+//! releases do Dreamyemu saíram assim até a 0.4.1: a resposta era 404, que virava "em dia", e ninguém
 //! nunca foi avisado de versão nova. Da lista, sai a maior versão que não é rascunho — e que não
 //! é pré-lançamento, se o usuário desligou a opção.
 //!
@@ -17,7 +17,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 /// Onde as releases são publicadas.
-pub const REPOSITORIO: &str = "ZeebxTeam/zeebx-emu";
+pub const REPOSITORIO: &str = "Dreamyemu/dreamyemu";
 
 /// A versão deste binário.
 pub const VERSAO_ATUAL: &str = env!("CARGO_PKG_VERSION");
@@ -67,7 +67,7 @@ fn consulta(pre_lancamentos: bool) -> Result<Option<Lancamento>, String> {
         .new_agent();
     let mut resposta = agente
         .get(&url)
-        .header("User-Agent", &format!("zeebx/{VERSAO_ATUAL}"))
+        .header("User-Agent", &format!("dreamyemu/{VERSAO_ATUAL}"))
         .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|erro| erro.to_string())?;
@@ -140,7 +140,7 @@ pub enum Instalacao {
     AppImage,
     /// O instalador NSIS do Windows: o novo roda em modo passivo e reabre o emulador.
     InstaladorWindows,
-    /// Um `Zeebx.app` no macOS: o bundle é trocado inteiro.
+    /// Um `Dreamyemu.app` no macOS: o bundle é trocado inteiro.
     PacoteMac,
     /// Um gerenciador de pacotes cuida dela (Flatpak). O emulador não mexe, nem avisa: a versão
     /// nova chega pelo gerenciador, e um aviso só confundiria.
@@ -199,7 +199,7 @@ fn detecta(
     }
 }
 
-/// O `Zeebx.app` em que o executável está, se está em um: `.../Zeebx.app/Contents/MacOS/zeebx`.
+/// O `Dreamyemu.app` em que o executável está, se está em um: `.../Dreamyemu.app/Contents/MacOS/dreamyemu`.
 fn pacote_mac(exe: &std::path::Path) -> Option<&std::path::Path> {
     let pacote = exe.parent()?.parent()?.parent()?;
     (pacote.extension()? == "app").then_some(pacote)
@@ -367,14 +367,14 @@ mod tests {
         })
     }
 
-    /// A instalação de ponta a ponta, contra um servidor local: `ZEEBX_TESTE_MANIFESTO` é o
+    /// A instalação de ponta a ponta, contra um servidor local: `DREAMYEMU_TESTE_MANIFESTO` é o
     /// endereço de um manifesto com versão maior que esta, e `APPIMAGE` o arquivo a ser trocado.
     /// A assinatura tem de ter sido feita com a chave de [`CHAVE_PUBLICA`].
     #[cfg(all(feature = "atualizador", target_os = "linux"))]
     #[test]
     #[ignore]
     fn instala_de_um_servidor_local() {
-        let url = std::env::var("ZEEBX_TESTE_MANIFESTO").expect("ZEEBX_TESTE_MANIFESTO");
+        let url = std::env::var("DREAMYEMU_TESTE_MANIFESTO").expect("DREAMYEMU_TESTE_MANIFESTO");
         let estado = std::sync::Arc::new(std::sync::Mutex::new(Andamento::Instalando));
         println!("{:?}", baixa_e_instala(&url, &estado));
         println!("{:?}", estado.lock().unwrap());
@@ -383,8 +383,8 @@ mod tests {
     #[test]
     fn detecta_a_instalacao() {
         use std::path::Path;
-        let mac = Path::new("/Applications/Zeebx.app/Contents/MacOS/zeebx");
-        let solto = Path::new("/usr/bin/zeebx");
+        let mac = Path::new("/Applications/Dreamyemu.app/Contents/MacOS/dreamyemu");
+        let solto = Path::new("/usr/bin/dreamyemu");
         assert_eq!(detecta(true, false, false, true, true, Some(solto)), Instalacao::Gerenciada);
         assert_eq!(detecta(true, false, false, false, true, Some(solto)), Instalacao::AppImage);
         assert_eq!(detecta(true, false, false, false, false, Some(solto)), Instalacao::Manual);
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(detecta(false, false, true, false, false, Some(solto)), Instalacao::Manual);
         // Sem `uninstall.exe` ao lado: um `.exe` solto.
         assert_eq!(
-            detecta(false, true, false, false, false, Some(Path::new("C:/x/zeebx.exe"))),
+            detecta(false, true, false, false, false, Some(Path::new("C:/x/dreamyemu.exe"))),
             Instalacao::Manual
         );
     }

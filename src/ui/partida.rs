@@ -26,7 +26,7 @@ const INTERVALO_DO_RELATORIO: Duration = Duration::from_secs(2);
 /// biblioteca, [`crate::library::title_for`].
 pub fn caminho_da_serial(titulo: &str) -> PathBuf {
     let nome = match titulo.is_empty() {
-        true => "zeebx.serial.log".to_string(),
+        true => "dreamyemu.serial.log".to_string(),
         false => format!("{titulo}.serial.log"),
     };
     crate::config::config_dir().join("relatorios").join(nome)
@@ -51,7 +51,7 @@ pub fn caminho_da_sessao(titulo: &str, inicio: std::time::SystemTime) -> PathBuf
         }
     }
     let nome = match nome.trim_end_matches('-') {
-        "" => "zeebx",
+        "" => "dreamyemu",
         nome => nome,
     };
     pasta_de_sessoes().join(format!(
@@ -452,7 +452,7 @@ impl Partida {
     pub fn caminho_do_relatorio(&self) -> PathBuf {
         let nome = match self.sessao.title() {
             titulo if !titulo.is_empty() => format!("{titulo}.log"),
-            _ => "zeebx.log".to_string(),
+            _ => "dreamyemu.log".to_string(),
         };
         crate::config::config_dir().join("relatorios").join(nome)
     }
@@ -692,12 +692,12 @@ fn comeca_diario(caminho: &Path, abertura: &Abertura<'_>) -> Option<u64> {
         (false, _) => "software",
     };
     let cabecalho = format!(
-        "Zeebx — registro da sessão\n\
+        "Dreamyemu — registro da sessão\n\
          Jogo:          {titulo}\n\
          ID:            módulo {id}, applet {applet}\n\
          Pacote:        {}\n\
          Início:        {}\n\
-         Emulador:      Zeebx {} ({}/{})\n\
+         Emulador:      Dreamyemu {} ({}/{})\n\
          Vídeo:         rasterizador {rasterizador}, resolução interna {}x, antialias {}x, \
          anisotrópico {}x\n\
          Áudio:         {}, volume {}\n\

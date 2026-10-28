@@ -9,7 +9,7 @@ duas coisas que a leitura de símbolos não apanha:
 - ABI que responde errado, e não só ausente: `retro_api_version` tem de devolver 1, e
   `retro_get_system_info` tem de preencher a struct com o que o core declara.
 
-    python3 ferramentas/verifica_core.py caminho/para/zeebx_libretro.so
+    python3 ferramentas/verifica_core.py caminho/para/dreamyemu_libretro.so
 """
 
 import ctypes
@@ -94,7 +94,7 @@ def main(argv):
     nome = (info.library_name or b"").decode()
     extensoes = (info.valid_extensions or b"").decode()
     print(f"sistema: {nome!r} | extensões: {extensoes!r} | fullpath: {info.need_fullpath}")
-    if nome != "Zeebx":
+    if nome != "Dreamyemu":
         print("o nome do sistema não é o esperado", file=sys.stderr)
         return 1
     if extensoes != "mod|zip|7z":

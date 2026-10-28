@@ -12,20 +12,20 @@ members = [
 resolver = "3"
 
 [package]
-name = "zeebx"
+name = "dreamyemu"
 version = "0.4.2"
 edition = "2024"
-# O código do Zeebx é GPLv2 ou posterior. O backend de CPU padrão é o Dynarmic, para manter o
+# O código do Dreamyemu é GPLv2 ou posterior. O backend de CPU padrão é o Dynarmic, para manter o
 # núcleo compatível com frontends GPLv3 como Qt 6.
-authors = ["ZeebxTeam"]
+authors = ["Dreamyemu"]
 license = "GPL-2.0-or-later"
-repository = "https://github.com/ZeebxTeam/zeebx-emu"
-description = "O emulador definitivo de Zeebo!"
+repository = "https://github.com/gitmanbloggus/dreamyemu"
+description = "HTC Dream (T-Mobile G1) emulator"
 publish = false
 
 # O núcleo também é consumido pelos frontends Android, headless e Libretro.
 [lib]
-name = "zeebx"
+name = "dreamyemu"
 path = "src/lib.rs"
 
 # `desktop` reúne o que só a janela, os dispositivos do host e a interface precisam: rfd, minifb,
@@ -36,7 +36,7 @@ default = ["desktop"]
 # O backend interpretador, sem JIT e sem dependência de host: o único que o
 # SPL do Dream aceita (o Dynarmic da árvore aborta no CP15 do SPL — o run
 # vivo do Dynarmic está pinado como ignorado por isso). Compilado nos testes
-# e no wasm32/iOS por padrão; o `zeebx-sdl` (Dream) pede explicitamente.
+# e no wasm32/iOS por padrão; o `dreamyemu-sdl` (Dream) pede explicitamente.
 # Não muda o `BackendPadrao` (desktop continua no JIT).
 interpretador = []
 desktop = [
@@ -188,3 +188,11 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The Dream bring-up needs a p15 coprocessor Dynarmic can call into
+# (upstream aborts the process on any MCR/MRC without one, and the
+# crates.io binding exposes no way to install one). Vendored with a
+# minimal patch: `src/coprocessor_p15.cpp` + a `Config::coprocessor`
+# builder. Revisit if upstream ever exposes coprocessors itself.
+[patch.crates-io]
+dynarmic = { path = "vendor/dynarmic" }

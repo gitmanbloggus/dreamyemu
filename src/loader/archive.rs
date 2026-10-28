@@ -549,7 +549,7 @@ pub fn extract_in(zip: &Path, cache: &Path) -> std::io::Result<PathBuf> {
 pub const CACHE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// O nome do arquivo que lista o que veio do pacote.
-pub const MANIFESTO: &str = ".zeebx-pacote";
+pub const MANIFESTO: &str = ".dreamyemu-pacote";
 
 /// Apaga extrações antigas até o cache caber em `limite`, preservando a que contém `manter`.
 ///
@@ -714,7 +714,7 @@ mod tests {
 
     /// Escreve um zip com os caminhos dados, todos com conteúdo de brincadeira.
     fn make_zip(name: &str, entries: &[&str]) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("zeebx-teste-{name}.zip"));
+        let path = std::env::temp_dir().join(format!("dreamyemu-teste-{name}.zip"));
         let file = std::fs::File::create(&path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         let options: zip::write::FileOptions<()> =
@@ -770,9 +770,9 @@ mod tests {
     #[test]
     fn fingerprint_e_dos_bytes_nao_de_data() {
         let first = make_zip("hash-origem", &["mod/1/jogo.mod"]);
-        let dir = std::env::temp_dir().join("zeebx-teste-hash-copia");
+        let dir = std::env::temp_dir().join("dreamyemu-teste-hash-copia");
         std::fs::create_dir_all(&dir).unwrap();
-        let second = dir.join("zeebx-teste-hash-origem.zip");
+        let second = dir.join("dreamyemu-teste-hash-origem.zip");
         std::fs::copy(&first, &second).unwrap();
         assert_eq!(fingerprint(&first).unwrap(), fingerprint(&second).unwrap());
         let _ = std::fs::remove_file(first);
@@ -799,7 +799,7 @@ mod tests {
 
     #[test]
     fn a_poda_larga_o_cache_antigo_e_preserva_o_jogo_em_uso() {
-        let raiz = std::env::temp_dir().join("zeebx-teste-poda");
+        let raiz = std::env::temp_dir().join("dreamyemu-teste-poda");
         let _ = std::fs::remove_dir_all(&raiz);
         let cache = raiz.join("cache");
         let antigo = cache.join("jogo-antigo");

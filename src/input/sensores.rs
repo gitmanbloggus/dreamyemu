@@ -50,7 +50,7 @@ pub const REGRA_DO_UDEV: &str =
 
 /// Onde a regra fica. O número é menor que o do `73-seat-late.rules`, que é quem aplica o
 /// `uaccess`: uma regra depois dele marcaria o nó tarde demais.
-pub const ARQUIVO_DA_REGRA: &str = "/etc/udev/rules.d/70-zeebx-sensores.rules";
+pub const ARQUIVO_DA_REGRA: &str = "/etc/udev/rules.d/70-dreamyemu-sensores.rules";
 
 /// Grava a [`REGRA_DO_UDEV`] e a aplica aos nós que já existem, pedindo a senha pelo `pkexec`.
 ///

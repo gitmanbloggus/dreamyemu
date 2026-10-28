@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
 
-import zeebx
+import dreamyemu
 
 // A janela principal: a biblioteca, em grade ou no slider. O jogo, as configurações, os saves e o
 // log abrem cada um na sua janela, como no egui; os avisos de abertura e de versão nova são
@@ -32,7 +32,7 @@ ApplicationWindow {
     height: alturaGuardada > 0 ? alturaGuardada : 720
     minimumWidth: 480
     minimumHeight: 360
-    title: "Zeebx"
+    title: "Dreamyemu"
 
     // O tamanho em que a janela foi fechada é o tamanho em que ela abre. Chamadas de
     // função não têm sinal de mudança: avaliam uma vez, na montagem, que é quando valem.
@@ -259,7 +259,7 @@ ApplicationWindow {
             spacing: 8
 
             Label {
-                text: "Zeebx"
+                text: "Dreamyemu"
                 font.pixelSize: 20
                 font.bold: true
             }

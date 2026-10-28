@@ -178,7 +178,7 @@ impl Emulador {
                     ui.visuals().error_fg_color,
                     format!("Não deu para ler: {erro}"),
                 );
-                ui.label("Em Ajustes › Aplicativos › Zeebx, conceda \"acesso a todos os arquivos\".");
+                ui.label("Em Ajustes › Aplicativos › Dreamyemu, conceda \"acesso a todos os arquivos\".");
             }
 
             egui::ScrollArea::vertical().show(ui, |ui| {

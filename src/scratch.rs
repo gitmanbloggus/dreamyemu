@@ -1,7 +1,7 @@
 //! Diretório temporário que se apaga sozinho, para os testes.
 //!
-//! Existia um vazamento pequeno e constante na suíte: os testes criavam `/tmp/zeebx-sql-*` e
-//! `/tmp/zeebx-saves-*` e limpavam **no começo** — para o caso de a rodada anterior ter falhado —
+//! Existia um vazamento pequeno e constante na suíte: os testes criavam `/tmp/dreamyemu-sql-*` e
+//! `/tmp/dreamyemu-saves-*` e limpavam **no começo** — para o caso de a rodada anterior ter falhado —
 //! e nunca no fim. Uma sessão com várias rodadas deixa dezenas de diretórios para trás. Com este
 //! guarda, o diretório sai quando o teste termina, passe ele ou não.
 
@@ -54,7 +54,7 @@ impl std::ops::Deref for TempDir {
 /// varredura inteira gasta perto de 1 GB.
 pub fn cabe_escrever(dir: &Path, bytes: usize) -> Result<(), String> {
     const PASSO: usize = 1024 * 1024;
-    let prova = dir.join("zeebx-prova-de-espaco");
+    let prova = dir.join("dreamyemu-prova-de-espaco");
     let escrita = std::fs::create_dir_all(dir).and_then(|()| {
         let mut arquivo = std::fs::File::create(&prova)?;
         let bloco = vec![0u8; PASSO];

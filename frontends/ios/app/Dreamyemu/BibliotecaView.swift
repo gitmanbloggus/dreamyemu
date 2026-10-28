@@ -3,10 +3,10 @@ import SwiftUI
 
 /// O estado que a lista e o jogo compartilham.
 ///
-/// O ponteiro é o que `zeebx_ios_cria` devolveu. Ele vive o tempo do processo: a lista e o
+/// O ponteiro é o que `dreamyemu_ios_cria` devolveu. Ele vive o tempo do processo: a lista e o
 /// quadro são a mesma sessão, e destruí-lo no meio de uma troca de tela deixaria a outra com
 /// um ponteiro morto.
-final class ZeebxModelo: ObservableObject {
+final class DreamyemuModelo: ObservableObject {
     let app: OpaquePointer
     @Published var titulos: [String] = []
     @Published var jogando = false
@@ -19,24 +19,24 @@ final class ZeebxModelo: ObservableObject {
         try? FileManager.default.createDirectory(at: suporte, withIntermediateDirectories: true)
         let criado = documentos.path.withCString { docs in
             suporte.path.withCString { sup in
-                zeebx_ios_cria(docs, sup)
+                dreamyemu_ios_cria(docs, sup)
             }
         }
         guard let criado else {
-            fatalError("zeebx_ios_cria devolveu nulo com pastas do sandbox")
+            fatalError("dreamyemu_ios_cria devolveu nulo com pastas do sandbox")
         }
         app = criado
         varre()
     }
 
     deinit {
-        zeebx_ios_destroi(app)
+        dreamyemu_ios_destroi(app)
     }
 
     func varre() {
-        let quantidade = zeebx_ios_varre(app)
+        let quantidade = dreamyemu_ios_varre(app)
         titulos = (0..<quantidade).compactMap { indice in
-            guard let ponteiro = zeebx_ios_titulo(app, indice) else { return nil }
+            guard let ponteiro = dreamyemu_ios_titulo(app, indice) else { return nil }
             return String(cString: ponteiro)
         }
     }
@@ -51,10 +51,10 @@ final class ZeebxModelo: ObservableObject {
             let audio = AVAudioSession.sharedInstance()
             try? audio.setCategory(.playback, mode: .default)
             try? audio.setActive(true)
-            if zeebx_ios_comeca(self.app, Int32(indice)) == 0 {
+            if dreamyemu_ios_comeca(self.app, Int32(indice)) == 0 {
                 self.erro = nil
                 self.jogando = true
-            } else if let ponteiro = zeebx_ios_erro(self.app) {
+            } else if let ponteiro = dreamyemu_ios_erro(self.app) {
                 self.erro = String(cString: ponteiro)
             }
             self.abrindo = false
@@ -62,13 +62,13 @@ final class ZeebxModelo: ObservableObject {
     }
 
     func fecha() {
-        zeebx_ios_para(app)
+        dreamyemu_ios_para(app)
         jogando = false
     }
 }
 
 struct BibliotecaView: View {
-    @ObservedObject var modelo: ZeebxModelo
+    @ObservedObject var modelo: DreamyemuModelo
 
     var body: some View {
         NavigationStack {
@@ -93,7 +93,7 @@ struct BibliotecaView: View {
                     }
                 }
             }
-            .navigationTitle("Zeebx")
+            .navigationTitle("Dreamyemu")
             .toolbar {
                 Button("Atualizar") { modelo.varre() }
             }

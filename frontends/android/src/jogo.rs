@@ -2,22 +2,22 @@
 //!
 //! O quadro ocupa tudo, e quem sai é o "voltar" do Android. O que aparece por cima são os
 //! controles na tela ([`crate::toque`]), para quem joga sem controle físico, e o painel de
-//! depuração, ligado nas configurações — que é o [`zeebx::ui::depuracao::painel`], o mesmo do
+//! depuração, ligado nas configurações — que é o [`dreamyemu::ui::depuracao::painel`], o mesmo do
 //! desktop.
 
 use std::time::Instant;
 
-use zeebx::session::Step;
-use zeebx::ui::depuracao;
-use zeebx::ui::gpu;
-use zeebx::ui::settings::{Proporcao, Scaling};
+use dreamyemu::session::Step;
+use dreamyemu::ui::depuracao;
+use dreamyemu::ui::gpu;
+use dreamyemu::ui::settings::{Proporcao, Scaling};
 
-use zeebx::input::bindings::Source;
-use zeebx::velocidade::rewind::Leitura;
+use dreamyemu::input::bindings::Source;
+use dreamyemu::velocidade::rewind::Leitura;
 
 use crate::Emulador;
 use crate::estado;
-use zeebx::session::FATIA_MAXIMA;
+use dreamyemu::session::FATIA_MAXIMA;
 
 impl Emulador {
     pub(crate) fn jogo(&mut self, ctx: &egui::Context) {
@@ -40,7 +40,7 @@ impl Emulador {
         let avancar = na_tela.avancar || fisico(&atalhos.avancar);
         let jogador = self.settings.controls.player(0);
         let turbo_apertado = na_tela.turbo
-            || jogador.is_some_and(|j| fisico(j.sources(zeebx::velocidade::turbo::BOTAO_DO_TURBO)));
+            || jogador.is_some_and(|j| fisico(j.sources(dreamyemu::velocidade::turbo::BOTAO_DO_TURBO)));
         // As origens físicas dos atalhos não chegam ao jogo: ver `Atalhos::reservadas`.
         let mut reservados = 0u32;
         for fonte in atalhos.reservadas() {
@@ -86,7 +86,7 @@ impl Emulador {
             // somam, porque meio curso de cada um não é um curso inteiro de nenhum.
             for (eixo, toque) in pad.axes.iter_mut().zip(self.sobreposicao.eixos) {
                 if *eixo == 0 {
-                    *eixo = (toque * zeebx::input::AXIS_CURSO as f32).round() as i32;
+                    *eixo = (toque * dreamyemu::input::AXIS_CURSO as f32).round() as i32;
                 }
             }
             sessao.set_port_pad(0, pad);
@@ -608,7 +608,7 @@ fn textura_de_estado(
 ) -> egui::TextureHandle {
     let mut rgba = Vec::with_capacity(miniatura.largura * miniatura.altura * 4);
     for pixel in miniatura.rgb565.chunks_exact(2) {
-        let cor = zeebx::video::display::Rgb::from_rgb565(u16::from_le_bytes([
+        let cor = dreamyemu::video::display::Rgb::from_rgb565(u16::from_le_bytes([
             pixel[0], pixel[1],
         ]));
         rgba.extend_from_slice(&[cor.r, cor.g, cor.b, 255]);
@@ -669,7 +669,7 @@ impl Emulador {
             .then(|| self.sessao.as_ref().map(|sessao| sessao.velocidade_alcancada()))
             .flatten()
             .map(|alcancada| {
-                zeebx::velocidade::rotulo_do_avanco(
+                dreamyemu::velocidade::rotulo_do_avanco(
                     self.settings.velocidade.avanco.proporcao(),
                     alcancada,
                     virgula,

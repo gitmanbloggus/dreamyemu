@@ -16,30 +16,30 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
-use zeebx::egui::Key;
-use zeebx::input;
-use zeebx::input::padview::PadArt;
-use zeebx::library::{self, Game};
-use zeebx::session::Z_WHEEL;
-use zeebx::input::bindings::Aparelho;
-use zeebx::ui::calibracao::{Calibracao, Situacao};
-use zeebx::ui::acervo::{self, Acervo, Ficha};
-use zeebx::ui::depuracao;
-use zeebx::ui::{atualizacao, discord};
-use zeebx::ui::navegacao::{self, Comando, Navegacao};
-use zeebx::video::icon::{self, Image};
-use zeebx::ui::entrada::EntradaDoDesktop;
-use zeebx::ui::i18n::{self, Catalog};
-use zeebx::ui::partida::{self, Abertura, Partida, Relatorio, Saida, TurboDaVolta};
-use zeebx::ui::screenshot;
-use zeebx::ui::settings::{self, ConfigDoJogo, Proporcao, Settings};
-use zeebx::video::rasterizer::QuadroNaPlaca;
-use zeebx::video::display::Framebuffer;
+use dreamyemu::egui::Key;
+use dreamyemu::input;
+use dreamyemu::input::padview::PadArt;
+use dreamyemu::library::{self, Game};
+use dreamyemu::session::Z_WHEEL;
+use dreamyemu::input::bindings::Aparelho;
+use dreamyemu::ui::calibracao::{Calibracao, Situacao};
+use dreamyemu::ui::acervo::{self, Acervo, Ficha};
+use dreamyemu::ui::depuracao;
+use dreamyemu::ui::{atualizacao, discord};
+use dreamyemu::ui::navegacao::{self, Comando, Navegacao};
+use dreamyemu::video::icon::{self, Image};
+use dreamyemu::ui::entrada::EntradaDoDesktop;
+use dreamyemu::ui::i18n::{self, Catalog};
+use dreamyemu::ui::partida::{self, Abertura, Partida, Relatorio, Saida, TurboDaVolta};
+use dreamyemu::ui::screenshot;
+use dreamyemu::ui::settings::{self, ConfigDoJogo, Proporcao, Settings};
+use dreamyemu::video::rasterizer::QuadroNaPlaca;
+use dreamyemu::video::display::Framebuffer;
 
 use super::ponte::qobject as gl;
 
 /// A imagem de quem não tem nenhuma: a logo do emulador, como no egui.
-const RESERVA: &[u8] = include_bytes!("../../../../assets/zeebx.png");
+const RESERVA: &[u8] = include_bytes!("../../../../assets/dreamyemu.png");
 
 thread_local! {
     static NUCLEO: RefCell<Option<Nucleo>> = const { RefCell::new(None) };
@@ -74,7 +74,7 @@ pub struct Volta {
     /// Por que o jogo parou, já traduzido; vazio enquanto ele roda. Um jogo que parou continua com
     /// o último quadro à mostra, e o motivo precisa aparecer em algum lugar.
     pub parou: String,
-    /// O aviso de calibração do Boomerang neste quadro, se há um. Ver [`zeebx::ui::calibracao`].
+    /// O aviso de calibração do Boomerang neste quadro, se há um. Ver [`dreamyemu::ui::calibracao`].
     pub aviso: Option<AvisoNaTela>,
     /// Um screenshot terminou de gravar desde a volta anterior.
     pub screenshot: Option<AvisoDeScreenshot>,
@@ -173,7 +173,7 @@ pub struct Nucleo {
     pub log_dispensado: bool,
     calibracao: Calibracao,
     /// As teclas apertadas na janela do jogo, como `egui::Key`. Ver
-    /// [`zeebx::ui::entrada::tecla_apertada`].
+    /// [`dreamyemu::ui::entrada::tecla_apertada`].
     teclas: HashSet<Key>,
     /// Por onde as threads de gravação dos screenshots respondem. Ver [`Nucleo::screenshot`].
     gravacoes: (Sender<Gravacao>, Receiver<Gravacao>),
@@ -366,7 +366,7 @@ impl Nucleo {
     ///
     /// **Só quando o que se edita é o que o jogo usa.** As configurações de um jogo não tocam outro
     /// que esteja aberto, e a global não toca o jogo aberto que tem as próprias.
-    pub fn na_sessao(&mut self, f: impl FnOnce(&mut zeebx::session::Session)) {
+    pub fn na_sessao(&mut self, f: impl FnOnce(&mut dreamyemu::session::Session)) {
         let do_aberto = self.partida.as_ref().and_then(Partida::chave);
         let vale = match &self.editando {
             Some(chave) => do_aberto == Some(chave.as_str()),
@@ -599,8 +599,8 @@ impl Nucleo {
     /// existe e a janela mostra sempre a tela, e lida sem isto ela tinha o quadro de quando o
     /// jogo desenhou em 2D pela última vez: o Ultimate Chess 3D piscava entre a cena e o preto.
     ///
-    /// [`Session::quadro_na_placa`]: zeebx::session::Session::quadro_na_placa
-    /// [`Session::materializa_quadro_gl`]: zeebx::session::Session::materializa_quadro_gl
+    /// [`Session::quadro_na_placa`]: dreamyemu::session::Session::quadro_na_placa
+    /// [`Session::materializa_quadro_gl`]: dreamyemu::session::Session::materializa_quadro_gl
     pub fn quadro(&mut self) -> Option<Quadro<'_>> {
         let com_placa = self.gl.is_some();
         let partida = self.partida.as_mut()?;
@@ -718,7 +718,7 @@ impl Nucleo {
     }
 
     /// O painel de depuração, quando ligado: os textos e a linha do tempo, como `(velocidade,
-    /// quadros)` da amostra mais antiga para a mais nova. Ver [`zeebx::ui::depuracao`].
+    /// quadros)` da amostra mais antiga para a mais nova. Ver [`dreamyemu::ui::depuracao`].
     pub fn depuracao(&self) -> Option<(Vec<String>, Vec<(u32, u32)>)> {
         let debug = &self.settings.debug;
         let sessao = self.partida.as_ref()?.sessao();

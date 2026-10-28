@@ -544,8 +544,8 @@ mod tests_no_disco {
     /// chegou até eles. Onde o sistema funde as grafias, o que a busca sem caixa tem de garantir
     /// vem de graça do próprio sistema de arquivos.
     fn distingue_caixa(onde: &Path) -> bool {
-        let alta = onde.join("zeebx-CAIXA");
-        let baixa = onde.join("zeebx-caixa");
+        let alta = onde.join("dreamyemu-CAIXA");
+        let baixa = onde.join("dreamyemu-caixa");
         std::fs::write(&alta, b"x").unwrap();
         let distingue = !baixa.exists();
         let _ = std::fs::remove_file(&alta);
@@ -555,7 +555,7 @@ mod tests_no_disco {
     /// Os dez ports de arcade pedem `font.fnz` e trazem `font.FNZ`. No console dá na mesma.
     #[test]
     fn acha_o_arquivo_com_outra_caixa() {
-        let raiz = std::env::temp_dir().join(format!("zeebx-vfs-{}", std::process::id()));
+        let raiz = std::env::temp_dir().join(format!("dreamyemu-vfs-{}", std::process::id()));
         let modulo = raiz.join("mod/279233");
         std::fs::create_dir_all(&modulo).unwrap();
         std::fs::write(modulo.join("font.FNZ"), b"fonte").unwrap();
@@ -589,7 +589,7 @@ mod tests_no_disco {
     /// O overlay do título guarda o que o jogo grava, sem tocar no conteúdo do pacote.
     #[test]
     fn overlay_grava_fora_do_conteudo_e_esconde_o_recurso_do_pacote() {
-        let raiz = std::env::temp_dir().join(format!("zeebx-vfs-overlay-{}", std::process::id()));
+        let raiz = std::env::temp_dir().join(format!("dreamyemu-vfs-overlay-{}", std::process::id()));
         let modulo = raiz.join("jogo/mod/1");
         let save = raiz.join("saves/abc");
         std::fs::create_dir_all(&modulo).unwrap();
@@ -637,7 +637,7 @@ mod tests_no_disco {
     /// Com overlay, o que o jogo gravou pode ser apagado e renomeado; o pacote não.
     #[test]
     fn overlay_protege_o_pacote_de_remocao_e_renomeio() {
-        let raiz = std::env::temp_dir().join(format!("zeebx-vfs-rm-{}", std::process::id()));
+        let raiz = std::env::temp_dir().join(format!("dreamyemu-vfs-rm-{}", std::process::id()));
         let modulo = raiz.join("jogo/mod/1");
         let save = raiz.join("saves/abc");
         std::fs::create_dir_all(&modulo).unwrap();
@@ -664,7 +664,7 @@ mod tests_no_disco {
     /// O OpenTyrian abre `fs:/mod/opentyrian_zeebo/data/tyrian1.lvl`: é a pasta dele no console.
     #[test]
     fn fs_mod_acha_a_pasta_do_modulo_quando_o_aparelho_nao_tem() {
-        let raiz = std::env::temp_dir().join(format!("zeebx-vfs-mod-{}", std::process::id()));
+        let raiz = std::env::temp_dir().join(format!("dreamyemu-vfs-mod-{}", std::process::id()));
         let modulo = raiz.join("jogo/tyrian");
         let aparelho = raiz.join("aparelho");
         std::fs::create_dir_all(modulo.join("data")).unwrap();

@@ -37,22 +37,22 @@ jobs:
         include:
           - nome: linux-x86_64
             sistema: ubuntu-24.04
-            binario: target/release/zeebx-headless
+            binario: target/release/dreamyemu-headless
           - nome: linux-aarch64
             sistema: ubuntu-24.04-arm
-            binario: target/release/zeebx-headless
+            binario: target/release/dreamyemu-headless
           - nome: windows-x86_64
             sistema: windows-latest
-            binario: target/release/zeebx-headless.exe
+            binario: target/release/dreamyemu-headless.exe
           - nome: windows-aarch64
             sistema: windows-11-arm
-            binario: target/release/zeebx-headless.exe
+            binario: target/release/dreamyemu-headless.exe
           - nome: macos-x86_64
             sistema: macos-15-intel
-            binario: target/release/zeebx-headless
+            binario: target/release/dreamyemu-headless
           - nome: macos-arm64
             sistema: macos-latest
-            binario: target/release/zeebx-headless
+            binario: target/release/dreamyemu-headless
     steps:
       - uses: actions/checkout@v5
 
@@ -83,13 +83,13 @@ jobs:
       - name: Compila
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
-        run: cargo build --release --locked -p zeebx-headless
+        run: cargo build --release --locked -p dreamyemu-headless
 
       - name: Testes
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: cargo test --release --locked -p zeebx-headless
+        run: cargo test --release --locked -p dreamyemu-headless
 
       - name: O binário existe
         shell: bash
@@ -138,7 +138,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: zeebx-headless-${{ matrix.nome }}
+          name: dreamyemu-headless-${{ matrix.nome }}
           path: entrega/
           if-no-files-found: error
           retention-days: 14

@@ -1,23 +1,23 @@
 [package]
-name = "zeebx-sdl"
+name = "dreamyemu-sdl"
 version = "0.4.2"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "A janela SDL do Dream: mostra o framebuffer do SPL do HTC Dream"
-authors = ["ZeebxTeam"]
-repository = "https://github.com/ZeebxTeam/zeebx-emu"
+description = "The Dream SDL window: shows the HTC Dream SPL framebuffer"
+authors = ["Dreamyemu"]
+repository = "https://github.com/gitmanbloggus/dreamyemu"
 publish = false
 
-# Binário `zeebx-sdl`: abre a tela do Dream (320x480 RGB565 do `RAM_A6C0_BASE`)
+# Binário `dreamyemu-sdl`: abre a tela do Dream (320x480 RGB565 do `RAM_A6C0_BASE`)
 # numa janela SDL2 e despeja a serial do SPL no stdout. Sem Qt de propósito,
-# como o `zeebx-cli`: precisa compilar sem o Qt instalado.
+# como o `dreamyemu-cli`: precisa compilar sem o Qt instalado.
 [[bin]]
-name = "zeebx-sdl"
+name = "dreamyemu-sdl"
 path = "src/main.rs"
 
 [dependencies]
 # Sem as features `desktop` (minifb/glutin/cpal): a janela é a SDL2, e o
 # núcleo que interessa aqui (interpretador, GuestMemory, bring-up MSM7201A)
 # não tem gate de feature. O core Libretro continua sem linkar host.
-zeebx = { path = "../..", default-features = false, features = ["interpretador"] }
+dreamyemu = { path = "../..", default-features = false, features = ["interpretador"] }
 sdl2 = "0.38"

@@ -26,7 +26,7 @@ import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-CACHE = pathlib.Path.home() / ".config/zeebx/cache"
+CACHE = pathlib.Path.home() / ".config/dreamyemu/cache"
 
 
 def limpa_o_cache():
@@ -36,17 +36,17 @@ def limpa_o_cache():
 
 def roda_o_lote(roms, ms, saida):
     """Roda um lote e devolve o texto da saída do teste."""
-    pasta = pathlib.Path("/tmp/zeebx-lote")
+    pasta = pathlib.Path("/tmp/dreamyemu-lote")
     shutil.rmtree(pasta, ignore_errors=True)
     pasta.mkdir(parents=True)
     for rom in roms:
         (pasta / rom.name).symlink_to(rom)
     ambiente = {
         **os.environ,
-        "ZEEBX_ROM": str(pasta),
-        "ZEEBX_ROM_MS": str(ms),
-        "ZEEBX_ROM_SAIDA": str(saida),
-        "ZEEBX_ROM_BASE": str(REPO / "docs/varredura"),
+        "DREAMYEMU_ROM": str(pasta),
+        "DREAMYEMU_ROM_MS": str(ms),
+        "DREAMYEMU_ROM_SAIDA": str(saida),
+        "DREAMYEMU_ROM_BASE": str(REPO / "docs/varredura"),
         "CARGO_PROFILE_DEV_DEBUG": "0",
         "CARGO_PROFILE_TEST_DEBUG": "0",
         "CARGO_BUILD_JOBS": "2",
@@ -64,7 +64,7 @@ def main():
     parser.add_argument("--roms", required=True, help="pasta com os .zip das ROMs")
     parser.add_argument("--lote", type=int, default=8, help="ROMs por lote (padrão 8)")
     parser.add_argument("--ms", type=int, default=6000, help="milissegundos virtuais por ROM")
-    parser.add_argument("--saida", default="/tmp/zeebx-varredura", help="onde gravar os relatórios")
+    parser.add_argument("--saida", default="/tmp/dreamyemu-varredura", help="onde gravar os relatórios")
     args = parser.parse_args()
 
     roms = sorted(pathlib.Path(args.roms).glob("*.zip"))

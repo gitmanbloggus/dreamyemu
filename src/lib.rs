@@ -1,4 +1,4 @@
-//! Núcleo reutilizável do Zeebx.
+//! Núcleo reutilizável do Dreamyemu.
 //!
 //! O motor é compartilhado pelo desktop, Libretro, headless, Android e iOS.
 
@@ -11,6 +11,8 @@ pub mod loader;
 pub mod library;
 pub mod msm7201a;
 pub mod msm7201a_serial;
+pub mod msm7201a_snapshot;
+pub mod msm7201a_yaffs;
 pub mod machine;
 pub mod ponte;
 pub mod rede;

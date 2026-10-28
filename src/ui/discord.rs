@@ -20,11 +20,11 @@ use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 
 use crate::video::icon::Image;
 
-/// O aplicativo Zeebx no Developer Portal. É ele que dá à presença o nome e as imagens.
+/// O aplicativo Dreamyemu no Developer Portal. É ele que dá à presença o nome e as imagens.
 pub const APLICATIVO: &str = "1548822136712466476";
 
 /// A chave do ícone do emulador entre as imagens do aplicativo.
-pub const CHAVE_DO_ICONE: &str = "zeebx";
+pub const CHAVE_DO_ICONE: &str = "dreamyemu";
 
 /// De quanto em quanto tempo tentar de novo quando o Discord não está aberto.
 const NOVA_TENTATIVA: Duration = Duration::from_secs(15);
@@ -111,7 +111,7 @@ fn atividade(
     let menu = |chave: &str| Atividade {
         detalhes: catalogo.get(chave).to_string(),
         imagem: icone.clone(),
-        texto_da_imagem: "Zeebx".to_string(),
+        texto_da_imagem: "Dreamyemu".to_string(),
         icone: None,
         inicio_ms,
     };
@@ -134,7 +134,7 @@ fn atividade(
         detalhes: catalogo.format("discord.playing", &[("name", &titulo)]),
         imagem,
         texto_da_imagem: titulo,
-        icone: Some((icone, "Zeebx".to_string())),
+        icone: Some((icone, "Dreamyemu".to_string())),
         inicio_ms,
     }
 }
@@ -354,7 +354,7 @@ mod tests {
         let atividade = Atividade {
             detalhes: "No menu".into(),
             imagem: CHAVE_DO_ICONE.into(),
-            texto_da_imagem: "Zeebx".into(),
+            texto_da_imagem: "Dreamyemu".into(),
             icone: None,
             inicio_ms: 0,
         };

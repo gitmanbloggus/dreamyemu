@@ -9,11 +9,11 @@ fn main() {
     // responderia pelo sistema em que o build.rs roda.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut recurso = winresource::WindowsResource::new();
-        recurso.set_icon("../../assets/icones/zeebx.ico");
+        recurso.set_icon("../../assets/icones/dreamyemu.ico");
         if let Err(erro) = recurso.compile() {
             println!("cargo:warning=sem ícone no .exe: {erro}");
         }
     }
-    println!("cargo:rerun-if-changed=../../assets/icones/zeebx.ico");
+    println!("cargo:rerun-if-changed=../../assets/icones/dreamyemu.ico");
     println!("cargo:rerun-if-changed=build.rs");
 }

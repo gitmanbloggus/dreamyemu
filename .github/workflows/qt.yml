@@ -1,12 +1,12 @@
-# O frontend Qt (`frontends/qt-standalone`, binário `zeebx-qt`), **a interface do emulador**:
+# O frontend Qt (`frontends/qt-standalone`, binário `dreamyemu-qt`), **a interface do emulador**:
 # compila, testa, monta os instaladores nos três sistemas e abre cada um antes de sair. Roda à mão
 # pela aba Actions, e é chamado pelo `ci.yml` e pelo `release.yml` (`workflow_call`) — um lugar só
 # para os passos do Qt, em vez de três cópias que envelhecem cada uma de um jeito. A interface do
-# egui saiu depois da 0.4.2; a linha de comando (`frontends/cli`, binário `zeebx`) compila no job
+# egui saiu depois da 0.4.2; a linha de comando (`frontends/cli`, binário `dreamyemu`) compila no job
 # próprio do `ci.yml`.
 #
-# Os pacotes saem como `zeebx-standalone-qt-<sistema>-<arquitetura>`, o nome que a página de
-# downloads (`docs/site.js`) reconhece como o desktop em Qt. O binário continua `zeebx-qt`.
+# Os pacotes saem como `dreamyemu-standalone-qt-<sistema>-<arquitetura>`, o nome que a página de
+# downloads (`docs/site.js`) reconhece como o desktop em Qt. O binário continua `dreamyemu-qt`.
 #
 # O Qt vem do `install-qt-action`, e não do sistema: o do `apt` do Ubuntu 24.04 é o 6.4.
 #
@@ -63,22 +63,22 @@ jobs:
           # ou mais nova que a de onde foi montado, e a release o monta no 22.04 pelo mesmo motivo.
           - nome: linux-x86_64
             sistema: ubuntu-22.04
-            binario: target/release/zeebx-qt
+            binario: target/release/dreamyemu-qt
             qt: "6.11.2"
             formato: appimage
           - nome: windows-x86_64
             sistema: windows-latest
-            binario: target/release/zeebx-qt.exe
+            binario: target/release/dreamyemu-qt.exe
             qt: "6.10.3"
             formato: nsis
           - nome: macos-x86_64
             sistema: macos-15-intel
-            binario: target/release/zeebx-qt
+            binario: target/release/dreamyemu-qt
             qt: "6.11.2"
             formato: app
           - nome: macos-arm64
             sistema: macos-latest
-            binario: target/release/zeebx-qt
+            binario: target/release/dreamyemu-qt
             qt: "6.11.2"
             formato: app
     steps:
@@ -128,7 +128,7 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake${{ runner.os == 'Windows' && '.exe' || '' }}
-        run: cargo build --release --locked -p zeebx-standalone-qt
+        run: cargo build --release --locked -p dreamyemu-standalone-qt
 
       # Os testes da ponte, com o Qt linkado no binário de teste.
       - name: Testes
@@ -137,7 +137,7 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake${{ runner.os == 'Windows' && '.exe' || '' }}
-        run: cargo test --release --locked -p zeebx-standalone-qt
+        run: cargo test --release --locked -p dreamyemu-standalone-qt
 
       # `--version` não abre janela, mas o binário com Qt linkado precisa achar as bibliotecas do
       # Qt para chegar ao `main`: uma DLL ou um framework que não carrega falha aqui, antes de
@@ -182,9 +182,9 @@ jobs:
           EXTRA_PLATFORM_PLUGINS: libqwayland.so
           EXTRA_QT_MODULES: waylandcompositor
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: cargo packager -p zeebx-standalone-qt --release --formats appimage
+        run: cargo packager -p dreamyemu-standalone-qt --release --formats appimage
 
-      # O `windeployqt` junta numa pasta o que o `zeebx-qt.exe` precisa do Qt — as DLLs, os plugins e
+      # O `windeployqt` junta numa pasta o que o `dreamyemu-qt.exe` precisa do Qt — as DLLs, os plugins e
       # os módulos QML que os arquivos de `qml/` importam —, e a configuração dos pacotes manda o
       # NSIS instalar a pasta ao lado do executável.
       - name: Instalador do Windows
@@ -195,9 +195,9 @@ jobs:
         run: |
           windeployqt --release --no-translations \
             --qmldir frontends/qt-standalone/qml \
-            --dir target/qt-implantado target/release/zeebx-qt.exe
+            --dir target/qt-implantado target/release/dreamyemu-qt.exe
           cd frontends/qt-standalone
-          cargo packager -p zeebx-standalone-qt --release --formats nsis
+          cargo packager -p dreamyemu-standalone-qt --release --formats nsis
 
       # O `cargo packager` monta o `.app`, e o `macdeployqt` põe dentro dele os frameworks, os
       # plugins e os módulos QML. Ele altera os binários, e no ARM um binário alterado sem
@@ -211,15 +211,15 @@ jobs:
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
         run: |
           set -euo pipefail
-          (cd frontends/qt-standalone && cargo packager -p zeebx-standalone-qt --release --formats app)
-          app="target/pacotes/Zeebx Qt.app"
+          (cd frontends/qt-standalone && cargo packager -p dreamyemu-standalone-qt --release --formats app)
+          app="target/pacotes/Dreamyemu Qt.app"
           macdeployqt "$app" -qmldir="$GITHUB_WORKSPACE/frontends/qt-standalone/qml"
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
           raiz=$(mktemp -d)
           cp -R "$app" "$raiz/"
           ln -s /Applications "$raiz/Applications"
-          hdiutil create -volname "Zeebx Qt" -srcfolder "$raiz" -ov -format UDZO target/pacotes/Zeebx.dmg
+          hdiutil create -volname "Dreamyemu Qt" -srcfolder "$raiz" -ov -format UDZO target/pacotes/Dreamyemu.dmg
           rm -rf "$raiz"
 
       - name: Nomear
@@ -228,9 +228,9 @@ jobs:
           cd target/pacotes
           for arquivo in *; do
             case "$arquivo" in
-              *-setup.exe) novo="zeebx-standalone-qt-${{ matrix.nome }}-setup.exe" ;;
-              *.AppImage)  novo="zeebx-standalone-qt-${{ matrix.nome }}.AppImage" ;;
-              *.dmg)       novo="zeebx-standalone-qt-${{ matrix.nome }}.dmg" ;;
+              *-setup.exe) novo="dreamyemu-standalone-qt-${{ matrix.nome }}-setup.exe" ;;
+              *.AppImage)  novo="dreamyemu-standalone-qt-${{ matrix.nome }}.AppImage" ;;
+              *.dmg)       novo="dreamyemu-standalone-qt-${{ matrix.nome }}.dmg" ;;
               *)           continue ;;
             esac
             mv -- "$arquivo" "$novo"
@@ -247,12 +247,12 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           QT_FORCE_STDERR_LOGGING: "1"
         run: |
-          mkdir -p "$RUNNER_TEMP/cfg/zeebx"
+          mkdir -p "$RUNNER_TEMP/cfg/dreamyemu"
           # Sem o Qt do `install-qt-action` no caminho: o AppImage tem de achar o dele.
           unset LD_LIBRARY_PATH QT_PLUGIN_PATH QML2_IMPORT_PATH
           set +e
           XDG_CONFIG_HOME="$RUNNER_TEMP/cfg" timeout 15 xvfb-run -a \
-            target/pacotes/zeebx-standalone-qt-${{ matrix.nome }}.AppImage > abre.log 2>&1
+            target/pacotes/dreamyemu-standalone-qt-${{ matrix.nome }}.AppImage > abre.log 2>&1
           saida=$?
           set -e
           cat abre.log
@@ -280,7 +280,7 @@ jobs:
             # O atualizador desembrulha o `.tar.gz` pulando o primeiro nível: a raiz tem de ser o
             # `.app`, já com o Qt do `macdeployqt` e a assinatura ad-hoc. Sem o `COPYFILE_DISABLE`
             # o tar do macOS mete arquivos `._*` do AppleDouble dentro do bundle.
-            COPYFILE_DISABLE=1 tar -czf "zeebx-standalone-qt-${{ matrix.nome }}.app.tar.gz" "Zeebx Qt.app"
+            COPYFILE_DISABLE=1 tar -czf "dreamyemu-standalone-qt-${{ matrix.nome }}.app.tar.gz" "Dreamyemu Qt.app"
           fi
           for pacote in *.AppImage *-setup.exe *.app.tar.gz; do
             [ -f "$pacote" ] || continue
@@ -289,8 +289,8 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: zeebx-standalone-qt-${{ matrix.nome }}
-          path: target/pacotes/zeebx-standalone-qt-*
+          name: dreamyemu-standalone-qt-${{ matrix.nome }}
+          path: target/pacotes/dreamyemu-standalone-qt-*
           if-no-files-found: error
           retention-days: 14
 
@@ -327,8 +327,8 @@ jobs:
         env:
           QMAKE: /usr/bin/qmake6
         run: |
-          cargo packager -p zeebx-standalone-qt --release --formats deb
-          mv ../../target/pacotes/*.deb ../../target/pacotes/zeebx-standalone-qt-linux-x86_64.deb
+          cargo packager -p dreamyemu-standalone-qt --release --formats deb
+          mv ../../target/pacotes/*.deb ../../target/pacotes/dreamyemu-standalone-qt-linux-x86_64.deb
 
       - name: Instala e abre
         run: |
@@ -338,13 +338,13 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
-              apt-get install -y -qq /p/zeebx-standalone-qt-linux-x86_64.deb
+              apt-get install -y -qq /p/dreamyemu-standalone-qt-linux-x86_64.deb
               apt-get install -y -qq xvfb xauth libgl1-mesa-dri > /dev/null
-              if ldd /usr/bin/zeebx-qt | grep "not found"; then exit 1; fi
-              mkdir -p /tmp/cfg/zeebx
+              if ldd /usr/bin/dreamyemu-qt | grep "not found"; then exit 1; fi
+              mkdir -p /tmp/cfg/dreamyemu
               set +e
               XDG_CONFIG_HOME=/tmp/cfg LANG=C.UTF-8 QT_FORCE_STDERR_LOGGING=1 \
-                timeout 15 xvfb-run -a zeebx-qt > /tmp/abre.log 2>&1
+                timeout 15 xvfb-run -a dreamyemu-qt > /tmp/abre.log 2>&1
               saida=$?
               set -e
               cat /tmp/abre.log
@@ -356,7 +356,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: zeebx-standalone-qt-linux-x86_64-deb
-          path: target/pacotes/zeebx-standalone-qt-linux-x86_64.deb
+          name: dreamyemu-standalone-qt-linux-x86_64-deb
+          path: target/pacotes/dreamyemu-standalone-qt-linux-x86_64.deb
           if-no-files-found: error
           retention-days: 14

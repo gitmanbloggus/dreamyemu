@@ -339,7 +339,7 @@ impl<C: CpuBackend> Machine<C> {
     /// não entregamos nada: melhor o jogo ver "não veio resposta" do que ver memória que ele vai
     /// recusar. O que trafega não muda em nenhum dos dois casos.
     pub(super) fn deliver_response(&mut self, objeto: u32) -> Result<(), CpuError> {
-        // A ponte **vem ligada**, e desliga-se pelo `ZEEBX_SEM_PONTE` (ver a construção do campo
+        // A ponte **vem ligada**, e desliga-se pelo `DREAMYEMU_SEM_PONTE` (ver a construção do campo
         // `bridge` em `machine::mod`). O comentário aqui dizia o contrário — "é opcional e vem
         // desligada" — e essa frase descrevia uma versão anterior: quem lesse só este ponto
         // concluiria que a entrega está desativada por omissão, que é o oposto do que acontece.

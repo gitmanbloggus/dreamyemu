@@ -7,27 +7,27 @@
 //! relatório sai estruturado, e o resumo pode ser comparado com o que já se sabia dela.
 //!
 //! Nenhuma ROM está na árvore, então **nada aqui roda sozinho**: os testes só fazem trabalho
-//! quando `ZEEBX_ROM` aponta para um jogo, e sem isso avisam e passam — que é o certo para quem
+//! quando `DREAMYEMU_ROM` aponta para um jogo, e sem isso avisam e passam — que é o certo para quem
 //! clonou o repositório sem ter os arquivos. É também o que evita transformar `cargo test` numa
 //! varredura de sessenta e cinco jogos sem ninguém ter pedido.
 //!
 //! ```bash
 //! # um jogo, com o relatório inteiro na tela
-//! ZEEBX_ROM="roms/Quake.zip" cargo test --release varredura -- --nocapture
+//! DREAMYEMU_ROM="roms/Quake.zip" cargo test --release varredura -- --nocapture
 //!
 //! # a varredura inteira, gravando um relatório por jogo e cobrando a linha de base
-//! ZEEBX_ROM=roms ZEEBX_ROM_MS=6000 ZEEBX_ROM_SAIDA=saida ZEEBX_ROM_BASE=docs/varredura \
+//! DREAMYEMU_ROM=roms DREAMYEMU_ROM_MS=6000 DREAMYEMU_ROM_SAIDA=saida DREAMYEMU_ROM_BASE=docs/varredura \
 //!   cargo test --release varredura -- --nocapture
 //! ```
 //!
 //! | Variável | O que faz |
 //! |---|---|
-//! | `ZEEBX_ROM` | um `.mod`/`.zip`, uma lista separada por vírgula, ou um diretório |
-//! | `ZEEBX_ROM_MS` | quanto tempo **virtual** rodar, em ms (padrão 6000, como o levantamento) |
-//! | `ZEEBX_ROM_TETO` | teto de tempo **real** por jogo, em segundos (padrão 90) |
-//! | `ZEEBX_ROM_SAIDA` | diretório onde gravar o relatório completo de cada jogo |
-//! | `ZEEBX_ROM_BASE` | diretório da linha de base; o que não existe é gravado, o que existe é cobrado |
-//! | `ZEEBX_ROM_REDUCAO` | fator da resolução interna do 3D no rasterizador de software: 1 (padrão), 2 ou 4 |
+//! | `DREAMYEMU_ROM` | um `.mod`/`.zip`, uma lista separada por vírgula, ou um diretório |
+//! | `DREAMYEMU_ROM_MS` | quanto tempo **virtual** rodar, em ms (padrão 6000, como o levantamento) |
+//! | `DREAMYEMU_ROM_TETO` | teto de tempo **real** por jogo, em segundos (padrão 90) |
+//! | `DREAMYEMU_ROM_SAIDA` | diretório onde gravar o relatório completo de cada jogo |
+//! | `DREAMYEMU_ROM_BASE` | diretório da linha de base; o que não existe é gravado, o que existe é cobrado |
+//! | `DREAMYEMU_ROM_REDUCAO` | fator da resolução interna do 3D no rasterizador de software: 1 (padrão), 2 ou 4 |
 //!
 //! O `--release` não é enfeite: em depuração o núcleo emulado roda uma ordem de grandeza mais
 //! devagar, e o teto de tempo real classificaria jogo bom como "lento demais".
@@ -58,14 +58,14 @@ const TETO_PLACAR: u64 = 30;
 /// Quantos métodos mais chamados o relatório mostra. É onde gargalo aparece.
 const CHAMADAS_MOSTRADAS: usize = 12;
 
-/// Lê os applets instalados de `ZEEBX_ROM_INSTALADOS`, no formato da bancada:
+/// Lê os applets instalados de `DREAMYEMU_ROM_INSTALADOS`, no formato da bancada:
 /// `0xCLSID:id,0xCLSID:id`.
 ///
 /// **Sem isto a roda não pode abrir jogo nenhum.** O `IShell::StartApplet` responde
 /// `ECLASSNOTSUPPORT` para classe que não está na lista, e a lista é do *host* — a bancada tem o
 /// `--instalados=` e a varredura agora aceita a mesma declaração.
 fn instalados_do_ambiente(rom: &Path) -> Vec<(u32, String)> {
-    let Ok(valor) = std::env::var("ZEEBX_ROM_INSTALADOS") else {
+    let Ok(valor) = std::env::var("DREAMYEMU_ROM_INSTALADOS") else {
         return Vec::new();
     };
     // **`auto` instala os jogos que estão ao lado da ROM**, com o número da pasta do módulo que
@@ -105,7 +105,7 @@ fn instalados_do_ambiente(rom: &Path) -> Vec<(u32, String)> {
         .collect()
 }
 
-/// Lê o roteiro de controle de `ZEEBX_ROM_TECLAS`.
+/// Lê o roteiro de controle de `DREAMYEMU_ROM_TECLAS`.
 ///
 /// Formato: `ms:botão` separado por vírgula, aplicado no **relógio virtual** — `1000:b1,2000:up`.
 /// Um passo sem botão (`3000:`) solta tudo. Os nomes são os de
@@ -121,7 +121,7 @@ fn instalados_do_ambiente(rom: &Path) -> Vec<(u32, String)> {
 /// há perguntas que só se respondem com alguém apertando o controle: se o caminho de entrada chega
 /// ao guest, se a Z-Wheel aceita a escolha.
 fn roteiro_de_teclas() -> Vec<(u64, Passo)> {
-    let Ok(valor) = std::env::var("ZEEBX_ROM_TECLAS") else {
+    let Ok(valor) = std::env::var("DREAMYEMU_ROM_TECLAS") else {
         return Vec::new();
     };
     let mut passos = Vec::new();
@@ -288,15 +288,15 @@ enum Passo {
     Solto,
 }
 
-/// Lê o rastreio de chamadas com `ZEEBX_ROM_TRACO`.
+/// Lê o rastreio de chamadas com `DREAMYEMU_ROM_TRACO`.
 ///
-/// Vale `1` (as últimas chamadas antes da falha) ou um filtro de texto: `ZEEBX_ROM_TRACO=IFile`
+/// Vale `1` (as últimas chamadas antes da falha) ou um filtro de texto: `DREAMYEMU_ROM_TRACO=IFile`
 /// guarda só as chamadas cujo nome contém aquilo. Existe porque "acesso inválido a 0x0" diz que
 /// algum ponteiro era nulo e não diz **qual** — e numa investigação o que responde é a última
 /// chamada antes de a execução sair do prumo. Sem esta opção o rastreio existe no motor e ninguém o
 /// liga numa varredura.
 fn rastreio_pedido() -> Option<String> {
-    let valor = std::env::var("ZEEBX_ROM_TRACO").ok()?;
+    let valor = std::env::var("DREAMYEMU_ROM_TRACO").ok()?;
     let valor = valor.trim().to_string();
     match valor.is_empty() || valor == "0" {
         true => None,
@@ -304,14 +304,14 @@ fn rastreio_pedido() -> Option<String> {
     }
 }
 
-/// Lê o caminho da captura de serial de `ZEEBX_ROM_SERIAL`.
+/// Lê o caminho da captura de serial de `DREAMYEMU_ROM_SERIAL`.
 ///
 /// A captura é onde a **instrumentação** escreve sem se misturar com o log do jogo: a árvore de
 /// widgets da primeira tecla, as classes criadas, os bancos abertos. Ela existe no `run` desde
 /// sempre (`--serial=`), e faltava aqui — e sem ela a pergunta "**para quem** foi esta tecla?"
 /// só se respondia com janela aberta, que é justamente o que a varredura existe para não exigir.
 fn serial_pedido() -> Option<std::path::PathBuf> {
-    let valor = std::env::var("ZEEBX_ROM_SERIAL").ok()?;
+    let valor = std::env::var("DREAMYEMU_ROM_SERIAL").ok()?;
     let valor = valor.trim();
     match valor.is_empty() {
         true => None,
@@ -319,7 +319,7 @@ fn serial_pedido() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Lê as classes a atender por **sonda** de `ZEEBX_ROM_SONDA`, como `0x01000000,0x0102c4e8`.
+/// Lê as classes a atender por **sonda** de `DREAMYEMU_ROM_SONDA`, como `0x01000000,0x0102c4e8`.
 ///
 /// É o instrumento para a pergunta "que classe é esta, e o que o jogo chama nela?" sem desmontar
 /// o módulo: a sonda devolve um objeto que responde sucesso a tudo e anota cada slot com os
@@ -327,7 +327,7 @@ fn serial_pedido() -> Option<std::path::PathBuf> {
 /// Z-Wheel pede `0x01000000` em `ShopAction_Init`, era recusado, e sem ele a biblioteca de jogos
 /// da roda não monta — a grade nunca aparece e nenhuma tecla faz nada.
 fn sonda_pedida() -> Option<Vec<u32>> {
-    let valor = std::env::var("ZEEBX_ROM_SONDA").ok()?;
+    let valor = std::env::var("DREAMYEMU_ROM_SONDA").ok()?;
     let classes: Vec<u32> = valor
         .split(',')
         .filter_map(|parte| u32::from_str_radix(parte.trim().trim_start_matches("0x"), 16).ok())
@@ -338,14 +338,14 @@ fn sonda_pedida() -> Option<Vec<u32>> {
     }
 }
 
-/// Lê o pedido de despejo de memória de `ZEEBX_ROM_DESPEJO`, no formato `endereço:tamanho`.
+/// Lê o pedido de despejo de memória de `DREAMYEMU_ROM_DESPEJO`, no formato `endereço:tamanho`.
 ///
 /// Existe porque a última pergunta de uma investigação costuma ser "o que tem **naquela**
 /// memória?": o rastreio diz que o jogo montou uma tabela de entradas de 28 bytes e quebrou
 /// chamando um ponteiro nulo; o que responde o resto é ler a tabela. O endereço muda de execução
 /// para execução (é heap do guest), então o despejo é lido no fim, com o mesmo relógio virtual.
 fn despejo_pedido() -> Option<(u32, usize)> {
-    let valor = std::env::var("ZEEBX_ROM_DESPEJO").ok()?;
+    let valor = std::env::var("DREAMYEMU_ROM_DESPEJO").ok()?;
     let (endereco, tamanho) = valor.trim().split_once(':')?;
     let endereco = u32::from_str_radix(endereco.trim().trim_start_matches("0x"), 16).ok()?;
     let tamanho = tamanho.trim().parse::<usize>().ok()?.min(64 * 1024);
@@ -460,7 +460,7 @@ pub struct Desempenho {
     /// Entradas no JIT e nanossegundos gastos dentro dele, quando o backend mede.
     ///
     /// É o que separa o guest do despacho: o tempo do laço que **não** está aqui dentro é
-    /// trampolim mais corpo do método. Ver [`zeebx::cpu::CpuBackend::relato_do_jit`].
+    /// trampolim mais corpo do método. Ver [`dreamyemu::cpu::CpuBackend::relato_do_jit`].
     pub entradas_no_jit: u64,
     /// Nanossegundos **estimados** dentro do JIT, e quantas amostras sustentam a estimativa.
     pub nanos_no_jit: u64,
@@ -482,7 +482,7 @@ impl Desempenho {
         }
         if self.amostras_no_jit == 0 {
             return format!(
-                "{} entrada(s) no JIT; tempo dentro dele não medido (ligue ZEEBX_ROM_PERFIL)",
+                "{} entrada(s) no JIT; tempo dentro dele não medido (ligue DREAMYEMU_ROM_PERFIL)",
                 self.entradas_no_jit
             );
         }
@@ -516,7 +516,7 @@ impl Desempenho {
 
     /// Nanossegundos de relógio fora do JIT por chamada de API.
     ///
-    /// **É o número que faltava.** O `ZEEBX_ROM_PERFIL` mede só o corpo do método; este mede o que
+    /// **É o número que faltava.** O `DREAMYEMU_ROM_PERFIL` mede só o corpo do método; este mede o que
     /// sobra, e é onde o trampolim vive. Sem ele, o custo por chamada de API é desconhecido — e
     /// foi tratando um número da era do Unicorn como atual que a revisão externa errou.
     pub fn nanos_fora_do_jit_por_chamada(&self) -> Option<u64> {
@@ -575,7 +575,7 @@ pub struct Pendencias {
     pub classes_pedidas: Vec<String>,
     /// O texto que o jogo desenhou, com o instante virtual — o que está escrito na tela.
     pub desenhados: Vec<String>,
-    /// O que o jogo chamou nas classes atendidas por **sonda** (`ZEEBX_ROM_SONDA`), slot a slot.
+    /// O que o jogo chamou nas classes atendidas por **sonda** (`DREAMYEMU_ROM_SONDA`), slot a slot.
     pub sonda: Vec<String>,
     /// O que cada classe de **widget** recebeu no acessador, por seletor.
     pub seletores: Vec<String>,
@@ -723,7 +723,7 @@ pub struct Relatorio {
     pub chamadas_maiores: Vec<(String, u64)>,
     /// Onde o tempo real foi gasto, por método de API, do mais caro para o mais barato.
     ///
-    /// Vazio a menos que `ZEEBX_ROM_PERFIL` esteja definido: ligar o cronômetro em cada chamada
+    /// Vazio a menos que `DREAMYEMU_ROM_PERFIL` esteja definido: ligar o cronômetro em cada chamada
     /// muda a velocidade medida, e o número de velocidade é o que a varredura existe para dar.
     /// Com a contagem de chamadas ao lado do custo, dá para separar **volume** de **peso**: o
     /// Rolima fazia 6,8 milhões de chamadas e o Ridge Racer 70 mil, e só o perfil diz qual dos
@@ -733,9 +733,9 @@ pub struct Relatorio {
     pub custo_total: u64,
     /// O fim do log do próprio jogo, por `DBGPRINTF` e por semihosting.
     pub log_do_jogo: Vec<String>,
-    /// O despejo de memória pedido em `ZEEBX_ROM_DESPEJO`, com o endereço de onde saiu.
+    /// O despejo de memória pedido em `DREAMYEMU_ROM_DESPEJO`, com o endereço de onde saiu.
     pub despejo: Option<(u32, Vec<u8>)>,
-    /// As últimas chamadas do rastreio, quando `ZEEBX_ROM_TRACO` o pediu.
+    /// As últimas chamadas do rastreio, quando `DREAMYEMU_ROM_TRACO` o pediu.
     ///
     /// Fica fora do resumo de propósito: é material de investigação, muda de uma execução para a
     /// outra com qualquer ajuste no motor, e cobrá-lo na linha de base seria acusar regressão em
@@ -801,7 +801,7 @@ impl Relatorio {
             // linha F.C.: com seis segundos virtuais apareciam com uma e seis cores, e com vinte
             // mostravam 2.410 e 4.133. Sem esta linha, quem lê o relatório acusa o jogo.
             let aviso = match d.cores {
-                0..=2 => " (tela quase uniforme: pode ser carregamento — vale aumentar ZEEBX_ROM_MS)",
+                0..=2 => " (tela quase uniforme: pode ser carregamento — vale aumentar DREAMYEMU_ROM_MS)",
                 _ => "",
             };
             texto.push_str(&format!(
@@ -1062,22 +1062,22 @@ pub fn examina(arquivo: &Path, ms_virtuais: u32, teto: Duration) -> Relatorio {
     let mixer = session.grava_audio(TAXA_DE_AMOSTRAGEM);
     // **A redução da resolução interna, para medir o que ela rende.** Só o rasterizador de
     // processador a usa; ver [`crate::video::rasterizer::GlState::define_reducao`].
-    if let Ok(valor) = std::env::var("ZEEBX_ROM_REDUCAO")
+    if let Ok(valor) = std::env::var("DREAMYEMU_ROM_REDUCAO")
         && let Ok(n) = valor.trim().parse::<usize>()
     {
         session.define_reducao(n);
     }
     // Perfil de custo: opt-in, porque o cronômetro por chamada encarece a própria execução.
-    let perfilando = std::env::var("ZEEBX_ROM_PERFIL").is_ok();
+    let perfilando = std::env::var("DREAMYEMU_ROM_PERFIL").is_ok();
     if perfilando {
         session.machine_mut().enable_api_profile();
     }
     // **A biblioteca local entra no catálogo antes da partida.** A Z-Wheel não lê a pasta de
     // ROMs: ela lê o `tt_game_info` do perfil, e o que liga um ao outro é o `catalog.json` que a
     // interface grava (`library::sync_catalog`). A varredura não o alimentava, e a medida é esta:
-    // com `ZEEBX_ROM_INSTALADOS`, o banco do perfil abre com as 59 linhas oficiais do pacote e a
-    // `ZEEBX_LIBRARY` com **zero** — a roda não tem o que pôr na grade, e nenhuma tecla tem o que
-    // mover. Só a pasta da ROM é varrida, e só quando `ZEEBX_ROM_INSTALADOS` o pede: o efeito
+    // com `DREAMYEMU_ROM_INSTALADOS`, o banco do perfil abre com as 59 linhas oficiais do pacote e a
+    // `DREAMYEMU_LIBRARY` com **zero** — a roda não tem o que pôr na grade, e nenhuma tecla tem o que
+    // mover. Só a pasta da ROM é varrida, e só quando `DREAMYEMU_ROM_INSTALADOS` o pede: o efeito
     // fora do diretório do jogo é o `catalog.json`, o mesmo que a interface mantém.
     if !instalados.is_empty()
         && let Some(pasta) = arquivo.parent()
@@ -1091,8 +1091,8 @@ pub fn examina(arquivo: &Path, ms_virtuais: u32, teto: Duration) -> Relatorio {
     }
     // O censo do acessador por classe de widget é opt-in pelo mesmo motivo do perfil de custo: ele
     // acrescenta uma seção ao relatório, e a linha de base dos 62 jogos não pode mudar por
-    // instrumento. `ZEEBX_ROM_SELETORES` o liga.
-    if std::env::var("ZEEBX_ROM_SELETORES").is_ok() {
+    // instrumento. `DREAMYEMU_ROM_SELETORES` o liga.
+    if std::env::var("DREAMYEMU_ROM_SELETORES").is_ok() {
         session.machine_mut().liga_censo_de_widgets();
     }
     // A captura de serial entra antes da partida: o que interessa nela é o começo.
@@ -1361,7 +1361,7 @@ mod tests {
     /// Aceita arquivo, lista separada por vírgula e diretório. O diretório é a varredura
     /// inteira, e ela **só acontece quando alguém a escreve** — nunca por padrão.
     fn roms_pedidas() -> Vec<PathBuf> {
-        let Ok(valor) = std::env::var("ZEEBX_ROM") else {
+        let Ok(valor) = std::env::var("DREAMYEMU_ROM") else {
             return Vec::new();
         };
         let mut caminhos = Vec::new();
@@ -1446,7 +1446,7 @@ fn exige_espaco(dirs: &[PathBuf]) {
         let roms = roms_pedidas();
         if roms.is_empty() {
             eprintln!(
-                "{nome}: nenhuma ROM para examinar. Aponte ZEEBX_ROM para um arquivo, uma lista \
+                "{nome}: nenhuma ROM para examinar. Aponte DREAMYEMU_ROM para um arquivo, uma lista \
                  separada por vírgula ou um diretório, e rode de novo com --release."
             );
             return;
@@ -1494,9 +1494,9 @@ fn exige_espaco(dirs: &[PathBuf]) {
     /// Quem cobra regressão é o [`a_rom_indicada_avanca`], com a linha de base.
     ///
     /// ```bash
-    /// ZEEBX_ROM=roms cargo test --release placar -- --nocapture
+    /// DREAMYEMU_ROM=roms cargo test --release placar -- --nocapture
     /// # mais rápido ainda, e gravando a tabela:
-    /// ZEEBX_ROM=roms ZEEBX_PLACAR_MS=3000 ZEEBX_PLACAR_SAIDA=placar.md \
+    /// DREAMYEMU_ROM=roms DREAMYEMU_PLACAR_MS=3000 DREAMYEMU_PLACAR_SAIDA=placar.md \
     ///   cargo test --release placar -- --nocapture
     /// ```
     #[test]
@@ -1504,13 +1504,13 @@ fn exige_espaco(dirs: &[PathBuf]) {
         let roms = roms_pedidas();
         if roms.is_empty() {
             eprintln!(
-                "o_placar_das_roms: nenhuma ROM para examinar. Aponte ZEEBX_ROM para um \
+                "o_placar_das_roms: nenhuma ROM para examinar. Aponte DREAMYEMU_ROM para um \
                  arquivo, uma lista separada por vírgula ou um diretório, e rode com --release."
             );
             return;
         }
-        let ms = numero("ZEEBX_PLACAR_MS", u64::from(MS_PLACAR)) as u32;
-        let teto = Duration::from_secs(numero("ZEEBX_PLACAR_TETO", TETO_PLACAR));
+        let ms = numero("DREAMYEMU_PLACAR_MS", u64::from(MS_PLACAR)) as u32;
+        let teto = Duration::from_secs(numero("DREAMYEMU_PLACAR_TETO", TETO_PLACAR));
         let mut linhas = Vec::new();
         let mut contagem: std::collections::BTreeMap<&str, usize> = Default::default();
         for rom in &roms {
@@ -1550,7 +1550,7 @@ fn exige_espaco(dirs: &[PathBuf]) {
             resumo.join(", ")
         );
         println!("\n{tabela}");
-        if let Ok(caminho) = std::env::var("ZEEBX_PLACAR_SAIDA") {
+        if let Ok(caminho) = std::env::var("DREAMYEMU_PLACAR_SAIDA") {
             let _ = std::fs::write(caminho, &tabela);
         }
     }
@@ -1579,10 +1579,10 @@ fn exige_espaco(dirs: &[PathBuf]) {
     /// arquivo que sumiu aparecem aqui, no commit que os causou.
     #[test]
     fn a_rom_indicada_avanca() {
-        let ms = numero("ZEEBX_ROM_MS", u64::from(MS_PADRAO)) as u32;
-        let teto = Duration::from_secs(numero("ZEEBX_ROM_TETO", TETO_PADRAO));
-        let saida = diretorio("ZEEBX_ROM_SAIDA");
-        let base = diretorio("ZEEBX_ROM_BASE");
+        let ms = numero("DREAMYEMU_ROM_MS", u64::from(MS_PADRAO)) as u32;
+        let teto = Duration::from_secs(numero("DREAMYEMU_ROM_TETO", TETO_PADRAO));
+        let saida = diretorio("DREAMYEMU_ROM_SAIDA");
+        let base = diretorio("DREAMYEMU_ROM_BASE");
         let mut onde_prova = vec![crate::config::config_dir()];
         onde_prova.extend(saida.iter().cloned());
         exige_espaco(&onde_prova);
@@ -1651,7 +1651,7 @@ fn exige_espaco(dirs: &[PathBuf]) {
 
     #[test]
     fn um_arquivo_que_nao_e_modulo_vira_relatorio_com_motivo() {
-        let caminho = std::env::temp_dir().join("zeebx-varredura-lixo.mod");
+        let caminho = std::env::temp_dir().join("dreamyemu-varredura-lixo.mod");
         std::fs::write(&caminho, b"isto nao e um modulo").unwrap();
         let relatorio = examina(&caminho, 10, Duration::from_secs(1));
         // O cabeçalho do `.mod` é frouxo: vinte bytes de texto passam pelo carregador e o que
@@ -1876,7 +1876,7 @@ fn exige_espaco(dirs: &[PathBuf]) {
     /// A linha de base é gravada na primeira vez e cobrada na segunda.
     #[test]
     fn a_linha_de_base_e_gravada_e_depois_cobrada() {
-        let caminho = std::env::temp_dir().join("zeebx-varredura-base.txt");
+        let caminho = std::env::temp_dir().join("dreamyemu-varredura-base.txt");
         let _ = std::fs::remove_file(&caminho);
         let modelo = Relatorio {
             arquivo: PathBuf::from("/tmp/x.mod"),
@@ -1982,9 +1982,9 @@ fn exige_espaco(dirs: &[PathBuf]) {
     #[test]
     fn o_texto_do_roteiro_vira_evento() {
         // SAFETY: teste de thread única, e a variável é lida logo abaixo.
-        unsafe { std::env::set_var("ZEEBX_ROM_TECLAS", "1000:e0x7000=0x4ea,2000:kselect") };
+        unsafe { std::env::set_var("DREAMYEMU_ROM_TECLAS", "1000:e0x7000=0x4ea,2000:kselect") };
         let passos = roteiro_de_teclas();
-        unsafe { std::env::remove_var("ZEEBX_ROM_TECLAS") };
+        unsafe { std::env::remove_var("DREAMYEMU_ROM_TECLAS") };
         assert_eq!(
             passos,
             vec![
@@ -2005,9 +2005,9 @@ fn exige_espaco(dirs: &[PathBuf]) {
     #[test]
     fn a_tecla_do_roteiro_dispensa_o_k() {
         // SAFETY: teste de thread única, e a variável é lida logo abaixo.
-        unsafe { std::env::set_var("ZEEBX_ROM_TECLAS", "30500:0xe064,31000:k0xe032,32000:up") };
+        unsafe { std::env::set_var("DREAMYEMU_ROM_TECLAS", "30500:0xe064,31000:k0xe032,32000:up") };
         let passos = roteiro_de_teclas();
-        unsafe { std::env::remove_var("ZEEBX_ROM_TECLAS") };
+        unsafe { std::env::remove_var("DREAMYEMU_ROM_TECLAS") };
         assert_eq!(
             passos,
             vec![

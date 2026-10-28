@@ -290,6 +290,54 @@ commit.
 - **CRT of the fork — OPEN.** Crate/binary renames (`zeebx` → fork name),
   README, `.info` files, updater key: currently all inherited, all TBD in
   one rename commit when installers exist.
+- **Device-accurate boot.img + recovery.img — OPEN.** `nand_bringup.img`
+  carries the normal-Android ramdisk and only a *stub* recovery header
+  (`ferramentas/nand_conteudo.py`: `ANDROID!`, 1-page kernel, no payload;
+  `nand_linux.py` overwrites the recovery blocks with boot.img). So
+  Power+Home (recovery combo, verified live) jumps at a stub, and the
+  framebuffer can only be tested through the full zygote→system_server
+  path. Build: (1) a device-accurate `boot.img` (DREAIMG-NBH kernel +
+  ramdisk, verified against the SPL `ANDROID!`/size checks at
+  `0x88073CDC`); (2) a true `recovery.img` ramdisk (`/sbin/recovery` +
+  minui) patched at NAND `0x502C0000`+ (guest blocks, `bloco =
+  0x126+(src-0x500C0000)/0x20000`), so recovery boots headless and
+  exercises the `FBMAP` presenter without Dalvik. Keep both images
+  git-ignored (third-party blobs, like `tests/spl/*.img`); only the
+  builder script + derived constants (block numbers, load addrs
+  `0xA8100000`, `FBMAP` markers) live in the repo.
+- **system_server init (Dream, in flight 2026-10-28).** Resume from
+  `/tmp/opencode/snap570.bin` reaches `system_server process 37` and
+  Audio init (`get_audpp_filter` + `AudioFilter.csv` ok). Three
+  same-disease stale-frame walls so far, each with a TEMP bring-up
+  bypass (one-shot, remove before upstream): (1) walker reads
+  dexPC-as-method from a stale node → `WALKERFIX` zeroes
+  `[0x4104af6c]` at walker entry (`src/cpu/interpretador.rs`);
+  (2) mterp `0xad00e3dc` (an `array-length`: `ldr r3,[r0,#8]`,
+  NOT iget — `r1=0xa` is the v-reg index, `r2=6` the dest) on wild
+  `r0=0xe4280000` from frame locals → `MTERPTOL` zero-maps the
+  page, pc-gated, cap 8 (`src/msm7201a.rs`); (3) current wall:
+  `dvmAbort` `strb` to baked literal `0xdeadd00d` after `Missing
+  classname argument to RuntimeInit!` → shutdown → detach-with-frames
+  → abort. Root cause of (3) is MAPPED: the args array `v10` holds
+  the wild `0xe4280000`; `array-length` reads 0 (zero page) which
+  EQUALS the expected count `v1=0`, so the fall-through logs
+  spuriously and the method bails (on-device the real array has
+  length ≥ 1 and the log is skipped). The wild `v10` comes from an
+  invoke arg-push over-reading a live method slot (`0x41aa8ba0`,
+  odex-mapped read-only, file-verified) + `0x10`; same poison
+  family appears in capset args (`eff=0x4e37021a ⊄ prm=0x388a3071`
+  ⇒ EPERM inevitable, Java catches it — cosmetic, not the blocker).
+  The classname string itself exists in both mms. Fast-iteration
+  snapshot `/tmp/opencode/snap582.bin` (saved at fatia 581700,
+  resumes to the wall in seconds). NEXT: restore `v10` (heap-scan
+  for a real `String[]`, one-shot write WALKERFIX-style) or fix the
+  over-reading invoke; then binder IPC (entirely absent: no
+  `/dev/binder`, no BC_TRANSACTION anywhere) is the next known-big
+  blocker before SurfaceFlinger/fb0 (`FBMAP` never fired, `fb0`
+  never opened). NOTE on odex forensics: this build's string/method
+  tables do NOT decode with stock dex-layout assumptions (every
+  hand-rolled parse desyncs) — treat static odex parsing as
+  unreliable, prefer live-memory evidence (KFAULT/MTERP/POISONWR).
 
 ## IRQ completion (Dream, open — live evidence 2026-10-23)
 

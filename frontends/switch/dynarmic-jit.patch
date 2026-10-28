@@ -5,7 +5,7 @@ diff -ruN a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/in
  
  namespace oaknut {
  
-+#if defined(ZEEBX_SWITCH_JIT)
++#if defined(DREAMYEMU_SWITCH_JIT)
 +extern "C" {
 +void *switch_jit_create(std::size_t size, void **rx);
 +void switch_jit_destroy(void *rw);
@@ -22,7 +22,7 @@ diff -ruN a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/in
          m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_MPROTECT(PROT_READ | PROT_WRITE | PROT_EXEC), MAP_ANON | MAP_PRIVATE, -1, 0);
  #elif defined(__OpenBSD__)
          m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);
-+#elif defined(ZEEBX_SWITCH_JIT)
++#elif defined(DREAMYEMU_SWITCH_JIT)
 +        {
 +            void* rx = nullptr;
 +            m_memory = (std::uint32_t*)switch_jit_create(size, &rx);
@@ -35,7 +35,7 @@ diff -ruN a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/in
  
  #if defined(_WIN32)
          VirtualFree((void*)m_memory, 0, MEM_RELEASE);
-+#elif defined(ZEEBX_SWITCH_JIT)
++#elif defined(DREAMYEMU_SWITCH_JIT)
 +        switch_jit_destroy(m_memory);
  #else
          munmap(m_memory, m_size);
@@ -51,7 +51,7 @@ diff -ruN a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/in
 +
 +    std::uint32_t* xptr() const
 +    {
-+#if defined(ZEEBX_SWITCH_JIT)
++#if defined(DREAMYEMU_SWITCH_JIT)
 +        return m_exec != nullptr ? m_exec : m_memory;
 +#else
 +        return m_memory;
@@ -61,7 +61,7 @@ diff -ruN a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/in
      void protect()
      {
 -#if defined(__APPLE__) && !TARGET_OS_IPHONE
-+#if defined(ZEEBX_SWITCH_JIT)
++#if defined(DREAMYEMU_SWITCH_JIT)
 +        switch_jit_executable(m_memory);
 +#elif defined(__APPLE__) && !TARGET_OS_IPHONE
          pthread_jit_write_protect_np(1);
@@ -72,7 +72,7 @@ diff -ruN a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/in
      void unprotect()
      {
 -#if defined(__APPLE__) && !TARGET_OS_IPHONE
-+#if defined(ZEEBX_SWITCH_JIT)
++#if defined(DREAMYEMU_SWITCH_JIT)
 +        switch_jit_writable(m_memory);
 +#elif defined(__APPLE__) && !TARGET_OS_IPHONE
          pthread_jit_write_protect_np(0);
@@ -83,7 +83,7 @@ diff -ruN a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/in
      void invalidate(std::uint32_t* mem, std::size_t size)
      {
 -#if defined(__APPLE__)
-+#if defined(ZEEBX_SWITCH_JIT)
++#if defined(DREAMYEMU_SWITCH_JIT)
 +        switch_jit_flush(mem, size);
 +#elif defined(__APPLE__)
          sys_icache_invalidate(mem, size);
@@ -93,7 +93,7 @@ diff -ruN a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/in
  
      void invalidate_all()
      {
-+#if defined(ZEEBX_SWITCH_JIT)
++#if defined(DREAMYEMU_SWITCH_JIT)
 +        invalidate(m_exec != nullptr ? m_exec : m_memory, m_size);
 +#else
          invalidate(m_memory, m_size);
@@ -103,7 +103,7 @@ diff -ruN a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/in
  protected:
 -    std::uint32_t* m_memory;
 +    std::uint32_t* m_memory = nullptr;
-+#if defined(ZEEBX_SWITCH_JIT)
++#if defined(DREAMYEMU_SWITCH_JIT)
 +    std::uint32_t* m_exec = nullptr;
 +#endif
      std::size_t m_size = 0;

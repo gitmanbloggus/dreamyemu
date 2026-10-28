@@ -8,6 +8,6 @@
 #
 # Aqui a ABI e a API são fixadas antes de o toolchain do NDK ser lido. Quem as escolhe é o
 # `compilar.sh`, pelas variáveis de ambiente.
-set(ANDROID_ABI "$ENV{ZEEBX_ANDROID_ABI}" CACHE STRING "" FORCE)
-set(ANDROID_PLATFORM "$ENV{ZEEBX_ANDROID_PLATFORM}" CACHE STRING "" FORCE)
+set(ANDROID_ABI "$ENV{DREAMYEMU_ANDROID_ABI}" CACHE STRING "" FORCE)
+set(ANDROID_PLATFORM "$ENV{DREAMYEMU_ANDROID_PLATFORM}" CACHE STRING "" FORCE)
 include("$ENV{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake")

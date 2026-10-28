@@ -1,15 +1,15 @@
 [package]
-name = "zeebx-android"
+name = "dreamyemu-android"
 version = "0.4.2"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "O frontend de Android do Zeebx"
+description = "The Dreamyemu Android frontend"
 publish = false
 
 # A `NativeActivity` carrega um `.so` e chama o `android_main` dele. Não há classe Java nossa:
 # o aplicativo inteiro é este Rust, sobre o mesmo núcleo que o desktop usa.
 [lib]
-name = "zeebx_android"
+name = "dreamyemu_android"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -17,7 +17,7 @@ crate-type = ["cdylib"]
 # e o aparelho fica mudo -- e sem compilar. `soundfont` é o MIDI tocado com um `.sf2` escolhido
 # nos ajustes: o `rustysynth` é Rust puro, e o banco só ocupa memória (cerca de 64 MiB para um de
 # 32 MB) quando há um.
-zeebx = { path = "../..", default-features = false, features = ["audio", "gl", "soundfont"] }
+dreamyemu = { path = "../..", default-features = false, features = ["audio", "gl", "soundfont"] }
 
 # **Não há eframe aqui, e isso é a razão de este arquivo existir.** O eframe gira o laço pelo
 # winit, e o winit joga fora todo botão de controle: ele traduz os códigos de tecla do Android

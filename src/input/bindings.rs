@@ -57,7 +57,7 @@ impl AxisSource {
 ///
 /// Pública porque o núcleo Libretro precisa da **mesma** regra no laço que lê o RetroPad: lá o
 /// manche parado chega como zero, e escrever esse zero por cima apagaria o que o espelho do
-/// direcional acabou de pôr — a opção `zeebx_dpad_to_analog_pN` ficaria sem efeito, e só no núcleo.
+/// direcional acabou de pôr — a opção `dreamyemu_dpad_to_analog_pN` ficaria sem efeito, e só no núcleo.
 pub const DEADZONE: f32 = 0.12;
 
 impl Source {
@@ -151,7 +151,7 @@ pub struct Player {
     /// Espelha o direcional nos eixos `X`/`Y`, para jogo que só lê o manche.
     ///
     /// **Desligado por padrão, e é o mesmo ajuste nos dois frontends:** aqui e no
-    /// `zeebx_dpad_to_analog` do core Libretro. O motivo de não ser o padrão está em
+    /// `dreamyemu_dpad_to_analog` do core Libretro. O motivo de não ser o padrão está em
     /// [`Pad::espelha_o_direcional_nos_eixos`], com as duas tentativas medidas que o desfizeram.
     #[serde(default)]
     pub direcional_nos_eixos: bool,

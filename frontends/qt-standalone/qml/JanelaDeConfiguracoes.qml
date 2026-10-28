@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-import zeebx
+import dreamyemu
 
 // A janela de configurações: uma janela do sistema, e não um painel dentro da principal, como no
 // egui. As opções são as do `settings.json`, lidas e gravadas pela chave — ver
@@ -42,7 +42,7 @@ ApplicationWindow {
     height: 640
     minimumWidth: 420
     minimumHeight: 320
-    title: "Zeebx — " + (doJogo ? tr("game_settings.title").replace("{game}", nomeDoJogo)
+    title: "Dreamyemu — " + (doJogo ? tr("game_settings.title").replace("{game}", nomeDoJogo)
                                 : tr("settings.title"))
 
     // Os textos e os valores se refazem sozinhos: a `versao` do idioma e a das configurações são
@@ -523,7 +523,7 @@ ApplicationWindow {
                                 anchors.centerIn: parent
                                 width: 360
                                 fillMode: Image.PreserveAspectFit
-                                source: "qrc:/zeebx/boomerang.png"
+                                source: "qrc:/dreamyemu/boomerang.png"
                                 rotation: janela.depende([abaDeControles.tique], cfg.giro())
                                 smooth: true
                             }
@@ -630,7 +630,7 @@ ApplicationWindow {
 
                             Image {
                                 anchors.fill: parent
-                                source: "image://zeebx/controle/base"
+                                source: "image://dreamyemu/controle/base"
                                 smooth: true
                             }
 
@@ -654,7 +654,7 @@ ApplicationWindow {
                                     visible: esperando || aceso || desenho.sob === modelData
                                     // As cores do egui: aceso verde, sob o cursor azulado, e a
                                     // captura laranja pulsando no relógio da interface.
-                                    source: "image://zeebx/controle/parte/" + index + "/"
+                                    source: "image://dreamyemu/controle/parte/" + index + "/"
                                             + (esperando ? "ffa028ff" : aceso ? "2fd68ab4" : "6c9cff50")
                                     opacity: esperando ? (100 + 110 * (0.5 + 0.5 * Math.sin(abaDeControles.tique * 0.2))) / 255 : 1
                                 }

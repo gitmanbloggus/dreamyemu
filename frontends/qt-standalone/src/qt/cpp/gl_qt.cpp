@@ -13,7 +13,7 @@
 
 #include <memory>
 
-namespace zeebx {
+namespace dreamyemu {
 
 namespace {
 // Vivem até o `gl_destroi`, no fim do `launch`: o contexto não pode morrer com a janela do jogo,
@@ -59,7 +59,7 @@ void aplica_icone()
 {
     // A logo tem mais de mil pixels de lado. O egui a reduzia a 256 pelo mesmo motivo: guardar a
     // imagem inteira para desenhar algo que nunca passa de alguns pixels na barra.
-    const QImage logo(QStringLiteral(":/zeebx/zeebx.png"));
+    const QImage logo(QStringLiteral(":/dreamyemu/dreamyemu.png"));
     if (logo.isNull()) {
         return;
     }
@@ -118,4 +118,4 @@ std::size_t gl_funcao(rust::Str nome)
     return reinterpret_cast<std::size_t>(contexto->getProcAddress(QByteArray(nome.data(), qsizetype(nome.size()))));
 }
 
-} // namespace zeebx
+} // namespace dreamyemu

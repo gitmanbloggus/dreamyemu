@@ -9,13 +9,13 @@ fn main() {
     // responderia pelo sistema em que o build.rs roda.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut recurso = winresource::WindowsResource::new();
-        recurso.set_icon("../../assets/icones/zeebx.ico");
+        recurso.set_icon("../../assets/icones/dreamyemu.ico");
         if let Err(erro) = recurso.compile() {
             println!("cargo:warning=sem ícone no .exe: {erro}");
         }
     }
     interface_qt();
-    println!("cargo:rerun-if-changed=../../assets/icones/zeebx.ico");
+    println!("cargo:rerun-if-changed=../../assets/icones/dreamyemu.ico");
     println!("cargo:rerun-if-changed=build.rs");
 }
 
@@ -25,7 +25,7 @@ fn interface_qt() {
     use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
     CxxQtBuilder::new_qml_module(
-        QmlModule::new("zeebx")
+        QmlModule::new("dreamyemu")
             .qml_files(["qml/Principal.qml", "qml/Jogo.qml", "qml/GradeDaBiblioteca.qml", "qml/SliderDaBiblioteca.qml", "qml/JanelaDeConfiguracoes.qml", "qml/JanelaDeSaves.qml", "qml/JanelaDeLog.qml"])
             .depend("QtQuick"),
     )
@@ -38,13 +38,13 @@ fn interface_qt() {
         "src/qt/cpp/quadro.cpp",
         "src/qt/cpp/imagens.cpp",
     ])
-    // A imagem do aviso de calibração e a logo do ícone, em `qrc:/zeebx/`. O `assets/` é do
+    // A imagem do aviso de calibração e a logo do ícone, em `qrc:/dreamyemu/`. O `assets/` é do
     // projeto, e não deste pacote.
     .qrc_resources(cxx_qt_build::QResources::new().resource(
         cxx_qt_build::QResource::new()
-            .prefix("/zeebx")
+            .prefix("/dreamyemu")
             .file(qt_build_utils::QResourceFile::new("../../assets/boomerang.png").alias("boomerang.png"))
-            .file(qt_build_utils::QResourceFile::new("../../assets/zeebx.png").alias("zeebx.png")),
+            .file(qt_build_utils::QResourceFile::new("../../assets/dreamyemu.png").alias("dreamyemu.png")),
     ))
     .qt_module("Quick")
     // O Qt Qml pede o Network no macOS.

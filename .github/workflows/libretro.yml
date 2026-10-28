@@ -6,7 +6,7 @@
 # 1. a biblioteca **carrega** de verdade (`ctypes` = `dlopen`/`LoadLibrary`, como o frontend faz) —
 #    isso apanha dependência que faltou no link, que uma lista de símbolos não apanha;
 # 2. os 25 símbolos `retro_*` respondem, `retro_api_version` devolve 1 e `retro_get_system_info`
-#    preenche a struct com `Zeebx`, `mod|zip`, `need_fullpath` e `block_extract`;
+#    preenche a struct com `Dreamyemu`, `mod|zip`, `need_fullpath` e `block_extract`;
 # 3. no Linux, `ldd` mostra que não há `libX11`, Wayland, EGL, ALSA, udev nem GTK pendurados.
 #
 # Cada alvo roda no seu próprio runner: AArch64 Linux e Windows em runner ARM64 nativo, porque
@@ -45,18 +45,18 @@ jobs:
           - alvo: linux-x86_64
             nome: linux-x86_64
             sistema: ubuntu-24.04
-            biblioteca: target/release/libzeebx_libretro.so
-            pacote: zeebx_libretro.so
+            biblioteca: target/release/libdreamyemu_libretro.so
+            pacote: dreamyemu_libretro.so
           - alvo: linux-aarch64
             nome: linux-aarch64
             sistema: ubuntu-24.04-arm
-            biblioteca: target/release/libzeebx_libretro.so
-            pacote: zeebx_libretro.so
+            biblioteca: target/release/libdreamyemu_libretro.so
+            pacote: dreamyemu_libretro.so
           - alvo: windows-x86_64
             nome: windows-x86_64
             sistema: windows-latest
-            biblioteca: target/release/zeebx_libretro.dll
-            pacote: zeebx_libretro.dll
+            biblioteca: target/release/dreamyemu_libretro.dll
+            pacote: dreamyemu_libretro.dll
           - alvo: windows-aarch64
             nome: windows-aarch64
             sistema: windows-11-arm
@@ -64,18 +64,18 @@ jobs:
             # monta um `.asm` com o `ml` do MSVC, que só existe para x86 e x64). O alvo compila assim
             # mesmo: o `unicorn-engine` sai do grafo por dependência condicional de alvo e o motor usa o
             # `dynarmic`, que recompila os blocos A32. Ver `src/cpu/mod.rs`, `BackendPadrao`.
-            biblioteca: target/release/zeebx_libretro.dll
-            pacote: zeebx_libretro.dll
+            biblioteca: target/release/dreamyemu_libretro.dll
+            pacote: dreamyemu_libretro.dll
           - alvo: macos-x86_64
             nome: macos-x86_64
             sistema: macos-15-intel
-            biblioteca: target/release/libzeebx_libretro.dylib
-            pacote: zeebx_libretro.dylib
+            biblioteca: target/release/libdreamyemu_libretro.dylib
+            pacote: dreamyemu_libretro.dylib
           - alvo: macos-arm64
             nome: macos-arm64
             sistema: macos-latest
-            biblioteca: target/release/libzeebx_libretro.dylib
-            pacote: zeebx_libretro.dylib
+            biblioteca: target/release/libdreamyemu_libretro.dylib
+            pacote: dreamyemu_libretro.dylib
     steps:
       - uses: actions/checkout@v5
 
@@ -107,7 +107,7 @@ jobs:
           # A35 é o denominador comum seguro entre RK3326 e H700/A53. AArch64 continua usando
           # NEON/AdvSIMD, mas o artefato não ganha instrução exclusiva do Cortex-A53.
           RUSTFLAGS: ${{ matrix.alvo == 'linux-aarch64' && '-C target-cpu=cortex-a35' || '' }}
-        run: cargo build --release --locked -p zeebx-libretro
+        run: cargo build --release --locked -p dreamyemu-libretro
 
       # A prova principal: abrir a biblioteca como o frontend abre e chamar a ABI.
       - name: A biblioteca carrega e a ABI responde
@@ -144,13 +144,13 @@ jobs:
         run: |
           mkdir -p pacote
           cp "${{ matrix.biblioteca }}" "pacote/${{ matrix.pacote }}"
-          cp frontends/libretro/zeebx_libretro.info pacote/
-          grep -q '^database = "Mobile - Zeebo"' pacote/zeebx_libretro.info
+          cp frontends/libretro/dreamyemu_libretro.info pacote/
+          grep -q '^database = "Mobile - Zeebo"' pacote/dreamyemu_libretro.info
           ls -la pacote/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: zeebx_libretro_${{ matrix.nome }}
+          name: dreamyemu_libretro_${{ matrix.nome }}
           path: pacote/
 
   # Biblioteca estática para o ROMBundler / RetroArch web ligar como SIDE_MODULE. A std é
@@ -175,7 +175,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: zeebx_libretro_emscripten
+          name: dreamyemu_libretro_emscripten
           path: target/wasm/
 
   # Biblioteca estática para o ROMBundler ligar no Horizon. O devkitA64 não está no runner:
@@ -211,16 +211,16 @@ jobs:
       - name: O arquivo é AArch64
         run: |
           tmp=$(mktemp -d)
-          ( cd "$tmp" && ar x "$GITHUB_WORKSPACE/frontends/switch/saida/libzeebx_libretro.a" )
+          ( cd "$tmp" && ar x "$GITHUB_WORKSPACE/frontends/switch/saida/libdreamyemu_libretro.a" )
           ruim=$(aarch64-none-elf-objdump -f "$tmp"/*.o | grep 'file format' | grep -v elf64-littleaarch64 || true)
           if [ -n "$ruim" ]; then
             echo "o .a misturou objeto que não é AArch64"
             echo "$ruim"
             exit 1
           fi
-          echo "libzeebx_libretro.a é ELF AArch64"
+          echo "libdreamyemu_libretro.a é ELF AArch64"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: zeebx_libretro_switch
-          path: frontends/switch/saida/libzeebx_libretro.a
+          name: dreamyemu_libretro_switch
+          path: frontends/switch/saida/libdreamyemu_libretro.a

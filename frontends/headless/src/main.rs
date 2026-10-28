@@ -1,7 +1,7 @@
-//! Zeebx sem interface: o emulador por linha de comando, configurado por um `config.ini`.
+//! Dreamyemu sem interface: o emulador por linha de comando, configurado por um `config.ini`.
 //!
 //! Existe para quem já tem um frontend. Um programa que simula a carcaça do console, uma
-//! estante de jogos, um arcade de fliperama — nenhum deles quer a biblioteca do Zeebx por cima
+//! estante de jogos, um arcade de fliperama — nenhum deles quer a biblioteca do Dreamyemu por cima
 //! da tela que ele mesmo desenhou. Este binário abre o jogo que lhe derem, obedece ao arquivo
 //! de configuração e não mostra mais nada.
 //!
@@ -23,9 +23,9 @@ use crate::config::Video;
 use crate::console::{Console, Fim};
 
 const AJUDA: &str = "\
-Zeebx headless — the Zeebo emulator on the command line.
+Dreamyemu headless — the Zeebo emulator on the command line.
 
-  zeebx-headless [OPTIONS] GAME
+  dreamyemu-headless [OPTIONS] GAME
 
 GAME is required: a `.mod`, or the `.zip` that holds it. To boot into the
 Z-Wheel, pass the Z-Wheel — it is a game like any other.
@@ -47,10 +47,10 @@ Everything else — video, audio, controls — lives in the `config.ini`.
 ";
 
 fn main() -> ExitCode {
-    // **O `ZEEBX_LOG` vale como ponto de partida, e o arquivo ganha dele.** O `config.ini` é
+    // **O `DREAMYEMU_LOG` vale como ponto de partida, e o arquivo ganha dele.** O `config.ini` é
     // escolha explícita de quem o editou; a variável é o que serve a quem depura uma execução
     // sem mexer em arquivo nenhum. Lido antes do arquivo para a ordem ser essa.
-    zeebx::registro::le_do_ambiente();
+    dreamyemu::registro::le_do_ambiente();
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -58,7 +58,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--version") {
-        println!("zeebx-headless {}", env!("CARGO_PKG_VERSION"));
+        println!("dreamyemu-headless {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--example") {
@@ -115,7 +115,7 @@ fn main() -> ExitCode {
             "error: nothing to run.\n\
              \n\
              Pass the `.mod`, or the `.zip` that holds it:\n\
-             \x20   zeebx-headless PATH/TO/GAME.zip"
+             \x20   dreamyemu-headless PATH/TO/GAME.zip"
         );
         return ExitCode::FAILURE;
     };
@@ -129,9 +129,9 @@ fn main() -> ExitCode {
 /// O modo sem vídeo: nada na tela, e o quadro sai pelo `[despejo]`.
 fn sem_janela(mut console: Console, caminho: &std::path::Path) -> ExitCode {
     // Sem janela não há contexto de GL vindo de uma, mas o 3D na placa continua possível: o
-    // núcleo sabe abrir um contexto fora de tela, que é o que o `zeebx run` já usa para medir.
+    // núcleo sabe abrir um contexto fora de tela, que é o que o `dreamyemu run` já usa para medir.
     let contexto = match console.settings.graphics.gpu_rasterizer {
-        true => match zeebx::video::contexto::Contexto::novo() {
+        true => match dreamyemu::video::contexto::Contexto::novo() {
             Ok(contexto) => Some(contexto),
             Err(erro) => {
                 eprintln!("warning: no reachable GPU, 3D stays in software: {erro}");
@@ -160,7 +160,7 @@ fn sem_janela(mut console: Console, caminho: &std::path::Path) -> ExitCode {
     loop {
         // O log do núcleo sai por aqui, uma vez por volta. Com o anel vazio — o caso comum, no
         // nível padrão — isto é um cadeado e uma leitura.
-        zeebx::registro::despeja_no_stderr();
+        dreamyemu::registro::despeja_no_stderr();
         match console.passo() {
             Fim::Segue => {}
             Fim::Acabou(motivo) => {
@@ -204,7 +204,7 @@ fn sem_janela(mut console: Console, caminho: &std::path::Path) -> ExitCode {
         let quadro = quadro.as_ref().unwrap_or_else(|| sessao.screen());
         if let Err(erro) = saida.escreve(quadro) {
             // A outra ponta fechou o cano. Não é falha de quem rodou: é o fim normal de
-            // `zeebx-headless ... | frontend` quando o frontend sai.
+            // `dreamyemu-headless ... | frontend` quando o frontend sai.
             eprintln!("stopped: {erro} ({} frames)", saida.contados());
             return ExitCode::SUCCESS;
         }
@@ -217,7 +217,7 @@ fn sem_janela(mut console: Console, caminho: &std::path::Path) -> ExitCode {
 
 /// Os controles que o sistema enxerga, pelos nomes que o `config.ini` espera.
 fn lista_controles() -> ExitCode {
-    let pads = zeebx::input::gamepads::Gamepads::new();
+    let pads = dreamyemu::input::gamepads::Gamepads::new();
     let nomes = pads.names();
     if nomes.is_empty() {
         println!("no controllers visible to the system");

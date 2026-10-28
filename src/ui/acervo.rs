@@ -375,7 +375,7 @@ mod tests {
     }
 }
 
-/// Com o pacote real: `ZEEBX_Z_WHEEL=<zip ou pasta> cargo test --release acervo -- --ignored`.
+/// Com o pacote real: `DREAMYEMU_Z_WHEEL=<zip ou pasta> cargo test --release acervo -- --ignored`.
 #[cfg(test)]
 mod pacote_real {
     use super::*;
@@ -383,7 +383,7 @@ mod pacote_real {
     #[test]
     #[ignore]
     fn o_acervo_do_pacote_real_traz_capas_e_nomes() {
-        let caminho = PathBuf::from(std::env::var("ZEEBX_Z_WHEEL").expect("ZEEBX_Z_WHEEL"));
+        let caminho = PathBuf::from(std::env::var("DREAMYEMU_Z_WHEEL").expect("DREAMYEMU_Z_WHEEL"));
         let acervo = Acervo::carrega(&caminho).expect("acervo");
         let com_capa = acervo.fichas.values().filter(|f| f.capa.is_some()).count();
         let com_logo = acervo.fichas.values().filter(|f| f.logo.is_some()).count();

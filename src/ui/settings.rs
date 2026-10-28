@@ -93,7 +93,7 @@ pub struct DebugView {
     /// `erro`, `fatal` ou `desligado`. Ver [`crate::registro`].
     ///
     /// É texto e não um `enum` de propósito: o mesmo vocabulário vale no `config.ini` do
-    /// headless, na opção `zeebx_log` do core Libretro e na variável `ZEEBX_LOG`, e converter
+    /// headless, na opção `dreamyemu_log` do core Libretro e na variável `DREAMYEMU_LOG`, e converter
     /// num lugar só ([`crate::registro::Ajuste::de_texto`]) evita quatro tabelas que divergem.
     pub nivel_de_log: String,
 }
@@ -780,7 +780,7 @@ mod tests {
 
     #[test]
     fn ida_e_volta_pelo_disco_preserva_tudo() {
-        let dir = std::env::temp_dir().join("zeebx-testes-settings");
+        let dir = std::env::temp_dir().join("dreamyemu-testes-settings");
         let path = dir.join("settings.json");
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -858,7 +858,7 @@ mod tests {
     /// campos novos, e o que foi guardado volta igual do disco.
     #[test]
     fn o_tamanho_da_janela_vai_e_volta_e_falta_nas_versoes_antigas() {
-        let dir = std::env::temp_dir().join("zeebx-testes-janela");
+        let dir = std::env::temp_dir().join("dreamyemu-testes-janela");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
@@ -896,7 +896,7 @@ mod tests {
     /// antigo não volta a ser gravado.
     #[test]
     fn o_speed_limit_antigo_vira_o_limite_de_quadros() {
-        let dir = std::env::temp_dir().join("zeebx-testes-speed-limit");
+        let dir = std::env::temp_dir().join("dreamyemu-testes-speed-limit");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
 
@@ -917,7 +917,7 @@ mod tests {
     /// já conhecia o atalho fica com o que escolheu.
     #[test]
     fn o_atalho_de_reiniciar_nao_rouba_um_botao() {
-        let dir = std::env::temp_dir().join(format!("zeebx-testes-reiniciar-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dreamyemu-testes-reiniciar-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
 
@@ -947,10 +947,10 @@ mod tests {
     #[test]
     fn arquivo_ausente_ou_estragado_devolve_o_padrao() {
         // Abrir com as opções de fábrica é sempre melhor que não abrir.
-        let ausente = std::env::temp_dir().join("zeebx-nao-existe-mesmo/settings.json");
+        let ausente = std::env::temp_dir().join("dreamyemu-nao-existe-mesmo/settings.json");
         assert_eq!(Settings::load_from(&ausente), Settings::default());
 
-        let dir = std::env::temp_dir().join("zeebx-testes-estragado");
+        let dir = std::env::temp_dir().join("dreamyemu-testes-estragado");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
         std::fs::write(&path, "{ isto não é json").unwrap();
@@ -963,7 +963,7 @@ mod tests {
         // Este é o caminho que o emulador usa de verdade: um arquivo escrito por uma versão
         // que não conhecia os eixos deixaria os manches mudos, e o padrão de um campo novo nem
         // sempre é o vazio.
-        let dir = std::env::temp_dir().join("zeebx-testes-eixos");
+        let dir = std::env::temp_dir().join("dreamyemu-testes-eixos");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
         std::fs::write(
@@ -982,7 +982,7 @@ mod tests {
     fn campo_que_falta_no_arquivo_usa_o_padrao() {
         // Um arquivo escrito por uma versão anterior não tem os campos novos, e ele precisa
         // continuar valendo.
-        let dir = std::env::temp_dir().join("zeebx-testes-parcial");
+        let dir = std::env::temp_dir().join("dreamyemu-testes-parcial");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
         std::fs::write(&path, r#"{"language": "pt-BR"}"#).unwrap();
@@ -1026,7 +1026,7 @@ mod tests {
     /// O arquivo do jogo vai e volta do disco; sem arquivo, ou ilegível, o jogo não tem as dele.
     #[test]
     fn as_do_jogo_vao_e_voltam_e_sem_arquivo_nao_ha() {
-        let dir = std::env::temp_dir().join("zeebx-testes-config-do-jogo");
+        let dir = std::env::temp_dir().join("dreamyemu-testes-config-do-jogo");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("jogos").join("01234567.json");
         assert_eq!(ConfigDoJogo::carrega_de(&path), None);

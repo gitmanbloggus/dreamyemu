@@ -23,7 +23,7 @@ fi
 
 # Only this target's staticlib. A search over the whole tree would also pick up
 # archives from other targets or a previous copy under frontends/switch/saida.
-arts=(target/aarch64-unknown-linux-gnu/release/libzeebx_libretro.a)
+arts=(target/aarch64-unknown-linux-gnu/release/libdreamyemu_libretro.a)
 
 if [[ ! -f "${arts[0]}" ]]; then
 	echo "bundle-native-libs: no libretro archive to extend" >&2

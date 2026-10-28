@@ -1,7 +1,7 @@
-//! O Zeebx no Android: a mesma emulação, outra tela.
+//! O Dreamyemu no Android: a mesma emulação, outra tela.
 //!
 //! Este pacote é o frontend inteiro. Ele não sabe emular nada — quem faz isso é a
-//! [`zeebx::session::Session`], a mesma que a janela do desktop e a linha de comando giram. O
+//! [`dreamyemu::session::Session`], a mesma que a janela do desktop e a linha de comando giram. O
 //! que existe aqui é o que muda de plataforma: de onde vêm as ROMs, como o quadro chega à tela
 //! e como o botão do aparelho vira botão do console.
 //!
@@ -36,12 +36,12 @@ use std::time::{Duration, Instant};
 
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent, WindowManagerFlags};
 
-use zeebx::input::Pad;
-use zeebx::session::Session;
-use zeebx::storage::StoragePaths;
-use zeebx::ui::i18n::Catalog;
-use zeebx::ui::library::{self, Game};
-use zeebx::ui::settings::{ModoDosControlesNaTela, Settings};
+use dreamyemu::input::Pad;
+use dreamyemu::session::Session;
+use dreamyemu::storage::StoragePaths;
+use dreamyemu::ui::i18n::Catalog;
+use dreamyemu::ui::library::{self, Game};
+use dreamyemu::ui::settings::{ModoDosControlesNaTela, Settings};
 
 use entrada::Entrada;
 use tela::{Placa, Tela};
@@ -55,15 +55,15 @@ fn android_main(app: AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
-            .with_tag("Zeebx"),
+            .with_tag("Dreamyemu"),
     );
     // **O registro do núcleo tem um destino no Android.** Até aqui ele era o único frontend que
     // não drenava o anel: o desktop imprime no `stderr`, o core manda pelo `retro_log`, o headless
     // imprime — e o Android não tinha onde. Aqui o destino é o `log`, que o `android_logger`
     // acabou de instalar e que sai em `logcat` com a etiqueta e a gravidade certas.
     //
-    // O nível começa no padrão do núcleo (`Aviso`); a variável `ZEEBX_LOG` vale se existir.
-    zeebx::registro::le_do_ambiente();
+    // O nível começa no padrão do núcleo (`Aviso`); a variável `DREAMYEMU_LOG` vale se existir.
+    dreamyemu::registro::le_do_ambiente();
 
     // Um pânico do Rust escreve no stderr, e o Android joga o stderr fora: sem isto o
     // aplicativo morre sem deixar uma linha no `logcat`. O gancho manda a mensagem e o lugar
@@ -76,7 +76,7 @@ fn android_main(app: AndroidApp) {
         log::error!("pânico em {onde}: {info}");
     }));
 
-    log::info!("Zeebx começando");
+    log::info!("Dreamyemu começando");
 
     let interno = app
         .internal_data_path()
@@ -93,7 +93,7 @@ fn android_main(app: AndroidApp) {
 
     // Os ajustes moram no diretório interno do aplicativo, que é só dele: o `Settings` do núcleo
     // é o mesmo do desktop, e aceita um caminho explícito justamente para isto.
-    let arquivo = interno.join("zeebx.json");
+    let arquivo = interno.join("dreamyemu.json");
 
     // A pasta de ROMs é escolhida pelo usuário e guardada nos ajustes. O padrão é `zeebo/roms`
     // na raiz do armazenamento, que é onde uma coleção costuma estar — e lê-la exige o "acesso a
@@ -124,8 +124,8 @@ fn android_main(app: AndroidApp) {
 /// A gravidade é preservada: um aviso do núcleo sai como `WARN` no `logcat`, e não como `INFO`
 /// como tudo o mais. É o que faz `adb logcat *:W` mostrar o que interessa sem o resto.
 fn despeja_o_registro() {
-    use zeebx::registro::Nivel;
-    for linha in zeebx::registro::drena() {
+    use dreamyemu::registro::Nivel;
+    for linha in dreamyemu::registro::drena() {
         let texto = format!("[{}] {}: {}", linha.nivel.etiqueta(), linha.alvo, linha.texto);
         match linha.nivel {
             Nivel::Depuracao => log::debug!("{texto}"),
@@ -281,7 +281,7 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
         );
     }
 
-    log::info!("Zeebx encerrando");
+    log::info!("Dreamyemu encerrando");
 }
 
 /// Qual tela está no ar.
@@ -311,7 +311,7 @@ pub struct Emulador {
     catalogo: Catalog,
     onde: Onde,
     aba: ajustes::Aba,
-    /// Qual dica de configuração está aberta. Os textos de ajuda do Zeebx são longos, e todos
+    /// Qual dica de configuração está aberta. Os textos de ajuda do Dreamyemu são longos, e todos
     /// abertos ao mesmo tempo viram uma parede: só um por vez.
     dica: widgets::Aberta,
     /// A pasta privada do aplicativo. Sempre legível, sem permissão nenhuma — é o atalho que
@@ -330,7 +330,7 @@ pub struct Emulador {
     /// Quem põe o quadro da placa na tela. Mora atrás de um `Arc<Mutex<_>>` porque quem o usa é
     /// um fecho que o egui guarda e chama no meio da pintura — ele não pode emprestar do
     /// `Emulador`. Nasce na primeira pintura, que é a primeira vez que há contexto corrente.
-    pintor: std::sync::Arc<std::sync::Mutex<Option<zeebx::ui::gpu::Pintor>>>,
+    pintor: std::sync::Arc<std::sync::Mutex<Option<dreamyemu::ui::gpu::Pintor>>>,
     /// Os jogos da pasta escolhida, com título e capa, lidos pelo mesmo `library::scan` do
     /// desktop.
     jogos: Vec<Game>,
@@ -384,9 +384,9 @@ pub struct Emulador {
     /// Os controles desenhados na tela, e os botões que os dedos apertam neles.
     sobreposicao: toque::Sobreposicao,
     /// A peça que o editor está arrastando, e onde o dedo a pegou em relação ao centro dela.
-    arrastando: Option<(zeebx::input::toque::Peca, egui::Vec2)>,
+    arrastando: Option<(dreamyemu::input::toque::Peca, egui::Vec2)>,
     /// A peça escolhida no editor, a que a barra de tamanho cresce e encolhe.
-    escolhida: Option<zeebx::input::toque::Peca>,
+    escolhida: Option<dreamyemu::input::toque::Peca>,
     /// O "voltar" foi apertado com um jogo aberto: a pergunta está na tela.
     confirmando: bool,
     /// O jogo está parado por escolha, e não por falha.
@@ -410,11 +410,11 @@ pub struct Emulador {
     /// [`entrada::Entrada::fisicos`].
     fisicos: std::collections::HashSet<&'static str>,
     /// O atalho do fast-forward, que se segura ou se alterna.
-    avanco: zeebx::velocidade::Interruptor,
+    avanco: dreamyemu::velocidade::Interruptor,
     /// Os pontos de retorno e o atalho do rewind.
-    rewind: zeebx::velocidade::rewind::ControleDoRewind,
+    rewind: dreamyemu::velocidade::rewind::ControleDoRewind,
     /// O turbo do jogador 1, o único que o Android tem.
-    turbo: zeebx::velocidade::turbo::TurboDaPorta,
+    turbo: dreamyemu::velocidade::turbo::TurboDaPorta,
     /// Se o fast-forward valeu na última volta, para o "▶▶" na tela.
     avancando: bool,
     /// O atalho esperando um botão do controle físico, na seção de ajustes.
@@ -436,7 +436,7 @@ impl Emulador {
             .map(PathBuf::from)
             .unwrap_or_else(|| minha_pasta.clone());
         // Mantem cache e aparelho nos caminhos historicos de Android
-        // (files/.config/zeebx), mas liga o overlay persistente em saves/.
+        // (files/.config/dreamyemu), mas liga o overlay persistente em saves/.
         let storage_base = estados_raiz.join(".config");
         let storage = StoragePaths::for_frontend(&storage_base, Some(&storage_base));
         if let Err(erro) = storage.create_dirs() {
@@ -534,7 +534,7 @@ impl Emulador {
         let (tx, rx) = std::sync::mpsc::channel();
         let pasta_da_thread = pasta.clone();
         match std::thread::Builder::new()
-            .name("zeebx-library".to_string())
+            .name("dreamyemu-library".to_string())
             .spawn(move || {
                 let jogos = library::scan(&pasta_da_thread);
                 let instalados = jogos
@@ -658,15 +658,15 @@ impl Emulador {
                 log::warn!("nao migrou saves antigos: {erro}");
             }
         }
-        zeebx::audio::soundfont::define_banco(self.settings.audio.soundfont.clone());
-        zeebx::audio::soundfont::define_efeitos(self.settings.audio.midi_effects);
+        dreamyemu::audio::soundfont::define_banco(self.settings.audio.soundfont.clone());
+        dreamyemu::audio::soundfont::define_efeitos(self.settings.audio.midi_effects);
         let graficos = self.settings.graphics.clone();
         // O 3D na placa vale só se houver placa: antes da primeira janela não há contexto, e a
         // sessão aberta sem ele cai no rasterizador de software sozinha.
         let na_placa = graficos.gpu_rasterizer && self.gl.is_some();
         match Session::start_with_storage_installed(
             caminho,
-            zeebx::PORTAS_PADRAO,
+            dreamyemu::PORTAS_PADRAO,
             None,
             na_placa,
             self.gl.clone().filter(|_| na_placa),
@@ -835,7 +835,7 @@ fn idioma_do_aparelho(app: &AndroidApp) -> String {
 }
 
 /// Uma imagem do núcleo virando textura do egui.
-fn textura_de(ctx: &egui::Context, nome: &str, imagem: &zeebx::video::icon::Image) -> egui::TextureHandle {
+fn textura_de(ctx: &egui::Context, nome: &str, imagem: &dreamyemu::video::icon::Image) -> egui::TextureHandle {
     let cor = egui::ColorImage::from_rgba_unmultiplied(
         [imagem.width, imagem.height],
         &imagem.rgba,

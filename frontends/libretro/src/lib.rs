@@ -1,8 +1,8 @@
-//! Core Libretro do Zeebx.
+//! Core Libretro do Dreamyemu.
 //!
-//! O frontend é dono de vídeo, áudio e entrada; aqui só se traduz isso para o motor `zeebx`.
+//! O frontend é dono de vídeo, áudio e entrada; aqui só se traduz isso para o motor `dreamyemu`.
 //! Nenhuma janela, placa de som ou controle do host é aberto por este crate: o motor roda pelo
-//! passo virtual de [`zeebx::session::Session::run_frame`].
+//! passo virtual de [`dreamyemu::session::Session::run_frame`].
 //!
 //! O core atende conteúdo `.mod`/`.zip`/`.7z`, vídeo RGB565, áudio PCM16 a 44,1 kHz, RetroPad nas
 //! duas portas, teclado USB e Boomerang alimentado pelo sensor do frontend. Renderização em
@@ -14,13 +14,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use glow::HasContext;
-use zeebx::audio::Mixer;
-use zeebx::config::ZWheel;
-use zeebx::input::Pad;
-use zeebx::input::bindings::Aparelho;
-use zeebx::session::{Session, StartError, Step};
-use zeebx::storage::StoragePaths;
-use zeebx::velocidade::{ContadorDePulo, Frameskip, LimiteFps, Ritmo};
+use dreamyemu::audio::Mixer;
+use dreamyemu::config::ZWheel;
+use dreamyemu::input::Pad;
+use dreamyemu::input::bindings::Aparelho;
+use dreamyemu::session::{Session, StartError, Step};
+use dreamyemu::storage::StoragePaths;
+use dreamyemu::velocidade::{ContadorDePulo, Frameskip, LimiteFps, Ritmo};
 
 /// Versão da ABI que este core implementa.
 const API_VERSION: u32 = 1;
@@ -254,12 +254,12 @@ fn pede_o_contexto_de_placa() {
     let alvo = &mut oferta as *mut RetroHwRenderCallback as *mut c_void;
     if unsafe { environ(ENV_SET_HW_RENDER, alvo) } {
         log(&format!(
-            "Zeebx: o frontend aceitou render em hardware (OpenGL {}.{}); o desenho passa a ser na placa",
+            "Dreamyemu: o frontend aceitou render em hardware (OpenGL {}.{}); o desenho passa a ser na placa",
             oferta.version_major, oferta.version_minor
         ));
         if let Ok(mut g) = OFERTA_DE_PLACA.lock() { *g = Some(oferta); }
     } else {
-        aviso("Zeebx: o frontend não oferece render em hardware; o desenho fica no processador");
+        aviso("Dreamyemu: o frontend não oferece render em hardware; o desenho fica no processador");
     }
 }
 
@@ -283,7 +283,7 @@ fn liga_a_placa(estado: &mut Core) {
         return;
     };
     let Some(pega_endereco) = oferta.get_proc_address else {
-        aviso("Zeebx: o frontend aceitou render em hardware mas não oferece get_proc_address; seguindo no processador");
+        aviso("Dreamyemu: o frontend aceitou render em hardware mas não oferece get_proc_address; seguindo no processador");
         return;
     };
     let contexto = std::sync::Arc::new(unsafe {
@@ -296,8 +296,8 @@ fn liga_a_placa(estado: &mut Core) {
     });
     // **A placa de agora pode ter caído no endereço de uma que morreu.** A marca de óbito é por
     // endereço, e endereço é coisa do alocador: sem esta limpeza a placa nova nasceria marcada como
-    // morta e não desenharia nada, em silêncio. Ver [`zeebx::video::gpu::a_placa_nasceu`].
-    zeebx::video::gpu::a_placa_nasceu(zeebx::video::gpu::endereco_da_placa(&contexto));
+    // morta e não desenharia nada, em silêncio. Ver [`dreamyemu::video::gpu::a_placa_nasceu`].
+    dreamyemu::video::gpu::a_placa_nasceu(dreamyemu::video::gpu::endereco_da_placa(&contexto));
     // A versão pedida pelo callback não prova a versão realmente entregue pelo driver. Registrar
     // os quatro valores evita confundir o libMali do RK3326 com o caminho Mesa/Panfrost do H700.
     let (vendor, renderer, version, shading) = unsafe {
@@ -309,7 +309,7 @@ fn liga_a_placa(estado: &mut Core) {
         )
     };
     log(&format!(
-        "Zeebx: GL real vendor={vendor}; renderer={renderer}; version={version}; GLSL={shading}"
+        "Dreamyemu: GL real vendor={vendor}; renderer={renderer}; version={version}; GLSL={shading}"
     ));
     // A placa entra no global **antes** da troca: é ele que `troca_para` consulta para decidir se
     // a sessão nasce com o rasterizador de placa. Assim as trocas seguintes — a Z-Wheel abrindo um
@@ -336,10 +336,10 @@ fn liga_a_placa(estado: &mut Core) {
         )),
     };
     match desfecho {
-        Ok(()) => log("Zeebx: desenhando na placa"),
+        Ok(()) => log("Dreamyemu: desenhando na placa"),
         Err(erro) => {
             aviso(&format!(
-                "Zeebx: o render em hardware falhou ({erro}); seguindo no processador"
+                "Dreamyemu: o render em hardware falhou ({erro}); seguindo no processador"
             ));
             // A sessão de software foi perdida na tentativa. Recria sem placa para não ficar sem
             // imagem nenhuma — e o global da placa é limpo, para as trocas seguintes nascerem no
@@ -349,7 +349,7 @@ fn liga_a_placa(estado: &mut Core) {
                 *guarda = None;
             }
             if let Err(tambem) = troca_para(estado, &antes, false) {
-                aviso(&format!("Zeebx: nem no processador deu para reabrir: {tambem}"));
+                aviso(&format!("Dreamyemu: nem no processador deu para reabrir: {tambem}"));
             }
         }
     }
@@ -372,9 +372,9 @@ unsafe extern "C" fn contexto_pronto() {
     if let Ok(mut guarda) = PLACA.lock() {
         // O `glow::Context` que guardamos é o do contexto que acabou de ser refeito: as funções
         // que ele resolveu apontam para o contexto **velho**. Quem desenha com ele precisa saber
-        // disso antes de qualquer `gl*` — ver [`zeebx::video::gpu::a_placa_morreu`].
+        // disso antes de qualquer `gl*` — ver [`dreamyemu::video::gpu::a_placa_morreu`].
         if let Some(placa) = guarda.as_ref() {
-            zeebx::video::gpu::a_placa_morreu(zeebx::video::gpu::endereco_da_placa(placa));
+            dreamyemu::video::gpu::a_placa_morreu(dreamyemu::video::gpu::endereco_da_placa(placa));
         }
         *guarda = None;
     }
@@ -415,7 +415,7 @@ unsafe extern "C" fn contexto_pronto() {
 unsafe extern "C" fn contexto_perdido() {
     if let Ok(mut guarda) = PLACA.lock() {
         if let Some(placa) = guarda.as_ref() {
-            zeebx::video::gpu::a_placa_morreu(zeebx::video::gpu::endereco_da_placa(placa));
+            dreamyemu::video::gpu::a_placa_morreu(dreamyemu::video::gpu::endereco_da_placa(placa));
         }
         *guarda = None;
     }
@@ -674,7 +674,7 @@ struct Core {
     session: Session,
     mixer: Mixer,
     /// Porta 1 e 2, como o guest as enxerga.
-    portas: [Option<Aparelho>; zeebx::input::PORTAS],
+    portas: [Option<Aparelho>; dreamyemu::input::PORTAS],
     /// Buffer do quadro no formato negociado, reaproveitado a cada `retro_run`.
     frame: Vec<u8>,
     audio: Vec<i16>,
@@ -708,7 +708,7 @@ struct Core {
     /// Se já avisou que o quadro saiu do tamanho do console.
     avisou_tamanho: bool,
     /// Política de síntese MIDI configurada nas opções do core.
-    midi_backend: zeebx::audio::MidiBackend,
+    midi_backend: dreamyemu::audio::MidiBackend,
     /// Estado anterior do Select do RetroPad, para o atalho de `AVK_CLR`.
     select_antes: bool,
     /// O controle da volta anterior, por porta, para o que muda virar **tecla do console**.
@@ -716,7 +716,7 @@ struct Core {
     /// O applet lê o direcional e o botão 1 como as teclas do BREW (`0xe031`…`0xe064`), e não
     /// pela posição do controle: é com elas que a Z-Wheel navega. Sem guardar o quadro anterior
     /// não há como saber o que mudou, e é a mudança que vira tecla.
-    pad_antes: [Pad; zeebx::input::PORTAS],
+    pad_antes: [Pad; dreamyemu::input::PORTAS],
     /// Quantos quadros já foram apresentados depois da parada.
     ///
     /// A tela final fica à mostra por um instante antes de o frontend ser dispensado: sem isso o
@@ -729,7 +729,7 @@ struct Core {
     frameskip: Frameskip,
     /// A fase do pulo fixo e da meia apresentação dos 30 FPS: quantos quadros já se passaram
     /// desde o último desenhado. É o mesmo contador da janela do desktop — ver
-    /// [`zeebx::velocidade::ContadorDePulo`].
+    /// [`dreamyemu::velocidade::ContadorDePulo`].
     pulo: ContadorDePulo,
     /// Se o `SET_AUDIO_BUFFER_STATUS_CALLBACK` já foi pedido ao frontend. Uma vez só: pedir de
     /// novo a cada quadro não muda a resposta, e a documentação do próprio Libretro pede
@@ -781,7 +781,7 @@ fn teclas() -> &'static Mutex<std::collections::VecDeque<(u32, bool)>> {
 ///
 /// `Esc` e `P` ficam de fora de propósito: são as teclas da interface do frontend, não do jogo.
 fn avk_da_tecla(keycode: u32) -> Option<u32> {
-    use zeebx::input::avk;
+    use dreamyemu::input::avk;
     Some(match keycode {
         RETROK_UP => avk::UP,
         RETROK_DOWN => avk::DOWN,
@@ -836,7 +836,7 @@ fn aviso(texto: &str) {
             &mensagem as *const RetroMessage as *mut c_void,
         );
     }
-    log(&format!("Zeebx: {texto}"));
+    log(&format!("Dreamyemu: {texto}"));
 }
 
 unsafe fn environ(cmd: u32, data: *mut c_void) -> bool {
@@ -861,7 +861,7 @@ fn log(mensagem: &str) {
 /// Escreve no log do frontend com o nível do `retro_log_level`.
 ///
 /// `0..=3` são `DEBUG`, `INFO`, `WARN` e `ERROR` do `libretro.h`. **Não há `FATAL` na ABI**, e
-/// por isso o [`zeebx::registro::Nivel::Fatal`] sai como `ERROR`: inventar um número fora da
+/// por isso o [`dreamyemu::registro::Nivel::Fatal`] sai como `ERROR`: inventar um número fora da
 /// faixa faria o frontend descartar a linha, que é o pior desfecho para a mensagem que diz que
 /// o emulador não pode continuar.
 fn log_com_nivel(nivel: u32, mensagem: &str) {
@@ -927,7 +927,7 @@ fn pede_o_buffer_do_frontend(largura: u32, altura: u32) -> Option<(*mut u8, usiz
 /// O ponteiro e o passo vêm de [`pede_o_buffer_do_frontend`], que só os devolve quando o frontend
 /// aceitou o pedido — e a `libretro.h` garante que o buffer vale até o fim desta chamada de
 /// `retro_run`, que é onde isto roda.
-fn escreve_o_quadro(tela: &zeebx::video::display::Framebuffer, dados: *mut u8, passo: usize) {
+fn escreve_o_quadro(tela: &dreamyemu::video::display::Framebuffer, dados: *mut u8, passo: usize) {
     let (largura, altura) = (tela.width() as usize, tela.height() as usize);
     let passo = passo.max(largura * 2);
     let bytes = passo.saturating_mul(altura);
@@ -940,8 +940,8 @@ fn escreve_o_quadro(tela: &zeebx::video::display::Framebuffer, dados: *mut u8, p
 }
 
 /// O nível do `libretro.h` que corresponde ao nível do núcleo.
-fn nivel_do_libretro(nivel: zeebx::registro::Nivel) -> u32 {
-    use zeebx::registro::Nivel;
+fn nivel_do_libretro(nivel: dreamyemu::registro::Nivel) -> u32 {
+    use dreamyemu::registro::Nivel;
     match nivel {
         Nivel::Depuracao => 0,
         Nivel::Informacao => 1,
@@ -955,7 +955,7 @@ fn nivel_do_libretro(nivel: zeebx::registro::Nivel) -> u32 {
 ///
 /// **Aqui, e não dentro do núcleo.** O log do frontend é um callback variádico do C, e chamá-lo
 /// do fundo de uma função de desenho ou de carregamento significaria atravessar código do
-/// frontend no meio de um estado nosso. O anel do [`zeebx::registro`] existe exatamente para
+/// frontend no meio de um estado nosso. O anel do [`dreamyemu::registro`] existe exatamente para
 /// isso: o núcleo guarda, e o core entrega num ponto em que a ABI espera ser chamada.
 ///
 /// O teto por chamada evita que um jogo depurado, que escreve milhares de linhas por quadro,
@@ -965,41 +965,41 @@ fn despeja_o_registro() {
     /// quadro seguinte — sem atrasar o jogo para servir de log.
     const POR_QUADRO: usize = 64;
 
-    for linha in zeebx::registro::drena().into_iter().take(POR_QUADRO) {
+    for linha in dreamyemu::registro::drena().into_iter().take(POR_QUADRO) {
         log_com_nivel(
             nivel_do_libretro(linha.nivel),
             &format!(
-                "Zeebx [{}] {}: {}",
+                "Dreamyemu [{}] {}: {}",
                 linha.nivel.etiqueta(),
                 linha.alvo,
                 linha.texto
             ),
         );
     }
-    let descartes = zeebx::registro::descartes();
+    let descartes = dreamyemu::registro::descartes();
     if descartes > 0 {
-        zeebx::registro::zera_descartes();
+        dreamyemu::registro::zera_descartes();
         log_com_nivel(
             2,
-            &format!("Zeebx: {descartes} linha(s) de log descartada(s) pelo teto do anel"),
+            &format!("Dreamyemu: {descartes} linha(s) de log descartada(s) pelo teto do anel"),
         );
     }
 }
 
-/// Aplica a opção `zeebx_log` ao registro do núcleo.
+/// Aplica a opção `dreamyemu_log` ao registro do núcleo.
 ///
-/// A variável de ambiente `ZEEBX_LOG` vale como ponto de partida — é o que serve a quem depura
+/// A variável de ambiente `DREAMYEMU_LOG` vale como ponto de partida — é o que serve a quem depura
 /// pela linha de comando —, e a opção do frontend ganha dela quando existe, porque é escolha
 /// explícita de quem está com o RetroArch aberto.
 fn aplica_nivel_de_log() {
-    zeebx::registro::le_do_ambiente();
-    let Some(texto) = (unsafe { le_opcao(c"zeebx_log") }) else {
+    dreamyemu::registro::le_do_ambiente();
+    let Some(texto) = (unsafe { le_opcao(c"dreamyemu_log") }) else {
         return;
     };
-    match zeebx::registro::Ajuste::de_texto(&texto) {
+    match dreamyemu::registro::Ajuste::de_texto(&texto) {
         Some(ajuste) => ajuste.aplica(),
         None => log(&format!(
-            "Zeebx: `{texto}` não é nível de log; seguindo no valor do ZEEBX_LOG ou no padrão"
+            "Dreamyemu: `{texto}` não é nível de log; seguindo no valor do DREAMYEMU_LOG ou no padrão"
         )),
     }
 }
@@ -1035,8 +1035,8 @@ fn le_select(porta: u32) -> bool {
 /// fica desligada.
 fn chave_do_espelho(porta: u32) -> Option<&'static CStr> {
     match porta {
-        0 => Some(c"zeebx_dpad_to_analog_p1"),
-        1 => Some(c"zeebx_dpad_to_analog_p2"),
+        0 => Some(c"dreamyemu_dpad_to_analog_p1"),
+        1 => Some(c"dreamyemu_dpad_to_analog_p2"),
         _ => None,
     }
 }
@@ -1122,7 +1122,7 @@ fn le_pad(porta: u32, bitmasks: bool) -> Pad {
 ///
 /// **A zona morta não é por tremor: é o que faz a opção do direcional funcionar.** O RetroPad
 /// entrega o manche parado no centro como zero, e escrever esse zero apagaria, a cada quadro, o que
-/// o espelho do direcional acabou de pôr — a opção `zeebx_dpad_to_analog_pN` ficava sem efeito
+/// o espelho do direcional acabou de pôr — a opção `dreamyemu_dpad_to_analog_pN` ficava sem efeito
 /// dentro do núcleo, e só nele (o `Player::pad` do standalone já tinha esta regra, e foi por isso
 /// que a medida no harness passava e o RetroArch não). Quem está no centro **não escreve**; quem
 /// está fora da zona morta vence o espelho.
@@ -1130,7 +1130,7 @@ fn le_pad(porta: u32, bitmasks: bool) -> Pad {
 /// A leitura entra por parâmetro para o teste poder chamar isto sem frontend nenhum.
 fn poe_os_eixos_do_retropad(pad: &mut Pad, eixo: impl Fn(u32, u32) -> i32) {
     let zona_morta =
-        (zeebx::input::bindings::DEADZONE * zeebx::input::AXIS_CURSO as f32).round() as i32;
+        (dreamyemu::input::bindings::DEADZONE * dreamyemu::input::AXIS_CURSO as f32).round() as i32;
     for (indice, valor) in [
         (0usize, eixo(ANALOG_LEFT, ANALOG_AXIS_X)),
         (1usize, eixo(ANALOG_LEFT, ANALOG_AXIS_Y)),
@@ -1265,17 +1265,17 @@ unsafe fn registra_opcoes_do_core() {
             RetroCoreOptionV2Category {
                 key: c"audio".as_ptr(),
                 desc: c"Áudio".as_ptr(),
-                info: c"Configurações de síntese e saída de som do Zeebx".as_ptr(),
+                info: c"Configurações de síntese e saída de som do Dreamyemu".as_ptr(),
             },
             RetroCoreOptionV2Category {
                 key: c"video".as_ptr(),
                 desc: c"Vídeo".as_ptr(),
-                info: c"Configurações de rasterização e imagem do Zeebx".as_ptr(),
+                info: c"Configurações de rasterização e imagem do Dreamyemu".as_ptr(),
             },
             RetroCoreOptionV2Category {
                 key: c"sistema".as_ptr(),
                 desc: c"Sistema".as_ptr(),
-                info: c"Perfis e ajustes gerais do Zeebx".as_ptr(),
+                info: c"Perfis e ajustes gerais do Dreamyemu".as_ptr(),
             },
             RetroCoreOptionV2Category {
                 key: c"controles".as_ptr(),
@@ -1514,7 +1514,7 @@ unsafe fn registra_opcoes_do_core() {
         }
 
         // **Cinco níveis, e "desligado" separado deles.** A lista é a mesma do registro do núcleo
-        // ([`zeebx::registro::Nivel`]) e a ordem é do mais grave para o mais falador, que é como
+        // ([`dreamyemu::registro::Nivel`]) e a ordem é do mais grave para o mais falador, que é como
         // se escolhe um teto de gravidade: o nível escolhido entra, e tudo o que é mais grave
         // também.
         let mut descarte_values = [RetroCoreOptionValue {
@@ -1575,7 +1575,7 @@ unsafe fn registra_opcoes_do_core() {
         // jogar com o direcional virando eixo.
         let definicoes: [RetroCoreOptionV2Definition; 20] = [
             RetroCoreOptionV2Definition {
-                key: c"zeebx_midi_backend".as_ptr(),
+                key: c"dreamyemu_midi_backend".as_ptr(),
                 desc: c"Sintetizador MIDI (reinício)".as_ptr(),
                 desc_categorized: c"Sintetizador MIDI (reinício)".as_ptr(),
                 info: c"Motor de reprodução MIDI: Auto usa SoundFont se instalado na pasta do sistema; Tabela de timbres inicia instantaneamente sem renderização pesada (recomendado para portáteis fracos como H700). Recarregue o jogo para aplicar.".as_ptr(),
@@ -1585,7 +1585,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"auto".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_soundfont".as_ptr(),
+                key: c"dreamyemu_soundfont".as_ptr(),
                 desc: c"Banco SoundFont (reinício)".as_ptr(),
                 desc_categorized: c"Banco SoundFont (reinício)".as_ptr(),
                 info: c"Qual .sf2 toca a música MIDI. A lista é a pasta soundfonts do aparelho, dentro da pasta de sistema do RetroArch (o log diz o caminho); ponha lá o banco do firmware do console, se o tiver. Automático usa o primeiro em ordem alfabética. Recarregue o jogo para aplicar.".as_ptr(),
@@ -1595,7 +1595,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"auto".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_volume".as_ptr(),
+                key: c"dreamyemu_volume".as_ptr(),
                 desc: c"Volume".as_ptr(),
                 desc_categorized: c"Volume".as_ptr(),
                 info: c"Volume mestre do console, de 0 a 100%. Vale na hora, sem recarregar o jogo.".as_ptr(),
@@ -1605,7 +1605,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"100".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_perfil".as_ptr(),
+                key: c"dreamyemu_perfil".as_ptr(),
                 desc: c"Perfil".as_ptr(),
                 desc_categorized: c"Perfil".as_ptr(),
                 info: c"Portátil aplica de uma vez o que o aparelho de mão fraco (RG40XX-H, muOS) precisa: tabela de timbres em vez de SoundFont, taxa e vozes do MIDI reduzidas, cache de som menor e, **quando o desenho é no processador**, o 3D em 0,5x — 320x240 ampliado para os 640x480 na apresentação, o que mediu 22% menos tempo real, com a imagem mais quadrada. Com o rasterizador de placa o perfil não mexe na resolução: ali quem manda é a opção separada. Enquanto ativo, ignora as opções individuais que ele cobre (mas não volume, névoa nem rasterizador, que continuam por conta própria). O sintetizador MIDI muda ao recarregar o conteúdo; o resto vale sem recarregar.".as_ptr(),
@@ -1615,7 +1615,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"padrao".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_soundfont_taxa".as_ptr(),
+                key: c"dreamyemu_soundfont_taxa".as_ptr(),
                 desc: c"Taxa do SoundFont".as_ptr(),
                 desc_categorized: c"Taxa do SoundFont".as_ptr(),
                 info: c"Em que taxa a música MIDI é sintetizada pelo banco de amostras. 44.100 Hz preserva o brilho das amostras do .sf2, que sao gravadas nessa taxa. 22.050 Hz custa metade do tempo e da memória, e é o que serve a portátil fraco. Vale da próxima música em diante.".as_ptr(),
@@ -1625,7 +1625,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"44100".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_midi_vozes".as_ptr(),
+                key: c"dreamyemu_midi_vozes".as_ptr(),
                 desc: c"Vozes do MIDI".as_ptr(),
                 desc_categorized: c"Vozes".as_ptr(),
                 info: c"Quantas notas podem soar ao mesmo tempo no banco de amostras. Menos vozes custa menos processador e rouba nota em trecho denso, que soa como nota que some. Vale da próxima música em diante.".as_ptr(),
@@ -1635,7 +1635,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"128".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_midi_efeitos".as_ptr(),
+                key: c"dreamyemu_midi_efeitos".as_ptr(),
                 desc: c"Reverb e chorus do MIDI".as_ptr(),
                 desc_categorized: c"Reverb e chorus".as_ptr(),
                 info: c"O reverb e o chorus que a música MIDI pede, quando ela toca pelo banco de amostras. Quanto de efeito cada instrumento leva vem da própria música; desligado, as notas terminam secas. Vale da próxima música em diante.".as_ptr(),
@@ -1645,7 +1645,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"enabled".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_cache_de_som_mb".as_ptr(),
+                key: c"dreamyemu_cache_de_som_mb".as_ptr(),
                 desc: c"Cache de som".as_ptr(),
                 desc_categorized: c"Cache de som".as_ptr(),
                 info: c"Quanta memória guardar de som já decodificado. Menos memória faz o emulador esquecer música tocada e sintetizá-la de novo quando ela voltar, o que custa uma pausa; mais memória evita a pausa e ocupa RAM. Vale do próximo descarte em diante.".as_ptr(),
@@ -1655,7 +1655,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"24".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_rasterizador".as_ptr(),
+                key: c"dreamyemu_rasterizador".as_ptr(),
                 desc: c"Rasterizador (reinício)".as_ptr(),
                 desc_categorized: c"Rasterizador (reinício)".as_ptr(),
                 info: c"Quem preenche o 3D: Automático usa a placa quando o frontend oferece render em hardware; Processador força o caminho de software. Use Processador quando a imagem sair errada ou preta com driver de vídeo problemático. Recarregue o jogo para aplicar.".as_ptr(),
@@ -1665,7 +1665,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"auto".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_resolucao_interna".as_ptr(),
+                key: c"dreamyemu_resolucao_interna".as_ptr(),
                 desc: c"Resolução interna do 3D".as_ptr(),
                 desc_categorized: c"Resolução interna".as_ptr(),
                 info: c"A resolução em que o 3D é desenhado, por lado. O quadro entregue ao frontend continua 640x480, e shader e proporção não mudam. Abaixo de 1x (0.5x, 0.25x) o desenho sai menor e é ampliado na apresentação: alivia o processador, e é o que serve a aparelho fraco — a imagem fica mais quadrada. Acima de 1x é supersampling: suaviza a borda do polígono, custa memória e preenchimento, e só vale com o rasterizador de placa. **Esta opção não muda o tamanho da imagem na tela**: o console entrega 640x480 e quem amplia é o frontend — com a escala inteira ligada no RetroArch (Integer Scale) ela só é apresentada em múltiplos de 640x480, o que numa tela 1080p dá 1280x960 com tarja. Para ocupar a tela, desligue a escala inteira lá. Vale na hora.".as_ptr(),
@@ -1675,7 +1675,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"1".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_antialias".as_ptr(),
+                key: c"dreamyemu_antialias".as_ptr(),
                 desc: c"Antisserrilhado".as_ptr(),
                 desc_categorized: c"Antisserrilhado".as_ptr(),
                 info: c"Amostras por pixel no 3D preenchido pela placa. Suaviza a borda do polígono e custa preenchimento. Sem efeito no rasterizador de processador.".as_ptr(),
@@ -1685,7 +1685,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"1".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_filtro_anisotropico".as_ptr(),
+                key: c"dreamyemu_filtro_anisotropico".as_ptr(),
                 desc: c"Filtro anisotrópico".as_ptr(),
                 desc_categorized: c"Filtro anisotrópico".as_ptr(),
                 info: c"Nitidez da textura vista de lado, no 3D preenchido pela placa. Sem efeito no rasterizador de processador.".as_ptr(),
@@ -1695,7 +1695,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"1".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_neblina".as_ptr(),
+                key: c"dreamyemu_neblina".as_ptr(),
                 desc: c"Névoa".as_ptr(),
                 desc_categorized: c"Névoa".as_ptr(),
                 info: c"A névoa que o jogo pede. Desligar deixa o cenário distante visível, o que alguns preferem; é escolha de quem joga, e não correção. Vale na hora.".as_ptr(),
@@ -1705,7 +1705,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"enabled".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_limite_fps".as_ptr(),
+                key: c"dreamyemu_limite_fps".as_ptr(),
                 desc: c"Limite de velocidade".as_ptr(),
                 desc_categorized: c"Limite de velocidade".as_ptr(),
                 info: c"Segura a lógica do jogo contra o relógio real, como o console faria. Use 60 FPS para impedir que títulos leves (RE4, Zeebo Extreme) corram rápido demais; 30 FPS mantém a velocidade lógica normal e mostra um em cada dois quadros. Desligado libera boost, útil se quiser acelerar jogos como Need for Speed. Vale na hora.".as_ptr(),
@@ -1715,7 +1715,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"60".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_frameskip".as_ptr(),
+                key: c"dreamyemu_frameskip".as_ptr(),
                 desc: c"Pular quadros".as_ptr(),
                 desc_categorized: c"Pular quadros".as_ptr(),
                 info: c"Pula o desenho 3D de alguns quadros para aliviar processador fraco, sem mudar a velocidade do jogo — a lógica roda igual, só o desenho some por um instante. Fixo pula sempre a mesma proporção; Automático só pula quando o frontend avisa que o áudio está prestes a estourar. Vale na hora.".as_ptr(),
@@ -1725,7 +1725,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"desligado".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_descarte_de_tiles".as_ptr(),
+                key: c"dreamyemu_descarte_de_tiles".as_ptr(),
                 desc: c"Descartar tiles (experimental)".as_ptr(),
                 desc_categorized: c"Descartar tiles (experimental)".as_ptr(),
                 info: c"Diz ao driver de vídeo que a profundidade e o estêncil do quadro podem ser jogados fora depois de ele ser apresentado. Rende em GPU de tiles, como o Mali dos portáteis, onde evita escrever esses anexos de volta na memória — e não se mede em placa de desktop. Desligado por padrão porque um jogo que não limpe a profundidade de um quadro para o outro conta com ela; se aparecer lixo na imagem com isto ligado, desligue. Vale na hora, e só tem efeito com o rasterizador de placa.".as_ptr(),
@@ -1735,7 +1735,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"desligado".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_log".as_ptr(),
+                key: c"dreamyemu_log".as_ptr(),
                 desc: c"Log do núcleo".as_ptr(),
                 desc_categorized: c"Log do núcleo".as_ptr(),
                 info: c"Quanto o núcleo escreve no log do RetroArch. O nível escolhido entra e tudo o que for mais grave também: Aviso mostra só o que saiu do previsto, Informação acrescenta abertura de jogo, poda de cache e carga do banco de som, e Depuração mostra o caminho de cada decisão (verboso, e mais lento). Vale na hora, e o log sai no arquivo que o RetroArch configurar.".as_ptr(),
@@ -1745,7 +1745,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"aviso".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_dpad_to_analog_p1".as_ptr(),
+                key: c"dreamyemu_dpad_to_analog_p1".as_ptr(),
                 desc: c"Direcional nos eixos do manche (jogador 1)".as_ptr(),
                 desc_categorized: c"Direcional nos eixos (jogador 1)".as_ptr(),
                 info: c"Com Ligado, o direcional do jogador 1 também empurra o manche esquerdo dos jogos: cada sentido escreve o curso inteiro no eixo, e soltar devolve o eixo ao centro. Serve a jogo que só escuta o eixo e ignora o direcional por completo. **Desligado por padrão** porque um jogo que lê os dois canais anda duas casas por toque, e porque quem lê variação lê a volta ao centro como um passo no sentido contrário — foi o defeito que desfez as duas tentativas anteriores. Os botões continuam funcionando: esta opção acrescenta o eixo, não troca o canal. Não tem efeito na porta do Boomerang, cujo eixo vem do sensor de movimento. **É o inverso do Analog to Digital Type do RetroArch**, que lê o manche e aperta o direcional: aqui é o direcional que lê, e o manche que recebe. Os dois juntos não se atropelam — o manche de verdade é lido depois, e é ele que fica valendo. Vale na hora.".as_ptr(),
@@ -1755,7 +1755,7 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"disabled".as_ptr(),
             },
             RetroCoreOptionV2Definition {
-                key: c"zeebx_dpad_to_analog_p2".as_ptr(),
+                key: c"dreamyemu_dpad_to_analog_p2".as_ptr(),
                 desc: c"Direcional nos eixos do manche (jogador 2)".as_ptr(),
                 desc_categorized: c"Direcional nos eixos (jogador 2)".as_ptr(),
                 info: c"O mesmo do jogador 1, para o controle da segunda porta. É uma opção separada porque são dois jogadores e dois controles: ligar no 1 não obriga o 2. Vale na hora.".as_ptr(),
@@ -1802,81 +1802,81 @@ unsafe fn registra_opcoes_do_core() {
         ));
         let variaveis: [RetroVariable; 20] = [
             RetroVariable {
-                key: c"zeebx_midi_backend".as_ptr(),
+                key: c"dreamyemu_midi_backend".as_ptr(),
                 value: c"Sintetizador MIDI (reinício); auto|timbres|soundfont".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_soundfont".as_ptr(),
+                key: c"dreamyemu_soundfont".as_ptr(),
                 value: valor_do_banco,
             },
             RetroVariable {
-                key: c"zeebx_volume".as_ptr(),
+                key: c"dreamyemu_volume".as_ptr(),
                 value: c"Volume; 100|90|80|70|60|50|40|30|20|10|0".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_perfil".as_ptr(),
+                key: c"dreamyemu_perfil".as_ptr(),
                 value: c"Perfil; padrao|portatil".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_soundfont_taxa".as_ptr(),
+                key: c"dreamyemu_soundfont_taxa".as_ptr(),
                 value: c"Taxa do SoundFont; 44100|22050".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_midi_vozes".as_ptr(),
+                key: c"dreamyemu_midi_vozes".as_ptr(),
                 value: c"Vozes do MIDI; 128|96|64|48".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_midi_efeitos".as_ptr(),
+                key: c"dreamyemu_midi_efeitos".as_ptr(),
                 value: c"Reverb e chorus do MIDI; enabled|disabled".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_cache_de_som_mb".as_ptr(),
+                key: c"dreamyemu_cache_de_som_mb".as_ptr(),
                 value: c"Cache de som (MiB); 24|48|16|8|4".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_rasterizador".as_ptr(),
+                key: c"dreamyemu_rasterizador".as_ptr(),
                 value: c"Rasterizador (reinício); auto|software".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_resolucao_interna".as_ptr(),
+                key: c"dreamyemu_resolucao_interna".as_ptr(),
                 value: c"Resolução interna do 3D; 1|0.5|0.25|2|3|4".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_antialias".as_ptr(),
+                key: c"dreamyemu_antialias".as_ptr(),
                 value: c"Antisserrilhado; 1|2|4|8".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_filtro_anisotropico".as_ptr(),
+                key: c"dreamyemu_filtro_anisotropico".as_ptr(),
                 value: c"Filtro anisotrópico; 1|2|4|8".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_neblina".as_ptr(),
+                key: c"dreamyemu_neblina".as_ptr(),
                 value: c"Névoa; enabled|disabled".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_limite_fps".as_ptr(),
+                key: c"dreamyemu_limite_fps".as_ptr(),
                 value: c"Limite de velocidade; 60|30|desligado".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_frameskip".as_ptr(),
+                key: c"dreamyemu_frameskip".as_ptr(),
                 value: c"Pular quadros; desligado|automatico|1|2|3|4|5|6".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_descarte_de_tiles".as_ptr(),
+                key: c"dreamyemu_descarte_de_tiles".as_ptr(),
                 value: c"Descartar tiles (experimental); desligado|ligado".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_log".as_ptr(),
+                key: c"dreamyemu_log".as_ptr(),
                 value: c"Log do núcleo; desligado|fatal|erro|aviso|informacao|depuracao".as_ptr(),
             },
-            // Uma por porta: o console tem duas (`zeebx::input::PORTAS`), e cada jogador liga a
+            // Uma por porta: o console tem duas (`dreamyemu::input::PORTAS`), e cada jogador liga a
             // sua. Ver `chave_do_espelho`, do lado que lê.
             RetroVariable {
-                key: c"zeebx_dpad_to_analog_p1".as_ptr(),
+                key: c"dreamyemu_dpad_to_analog_p1".as_ptr(),
                 value: c"Direcional nos eixos do manche (jogador 1); disabled|enabled".as_ptr(),
             },
             RetroVariable {
-                key: c"zeebx_dpad_to_analog_p2".as_ptr(),
+                key: c"dreamyemu_dpad_to_analog_p2".as_ptr(),
                 value: c"Direcional nos eixos do manche (jogador 2); disabled|enabled".as_ptr(),
             },
             RetroVariable {
@@ -1894,20 +1894,20 @@ unsafe fn registra_opcoes_do_core() {
 }
 
 /// A pasta onde o core procura os bancos: `soundfonts`, dentro do aparelho, dentro da pasta de
-/// sistema. É a mesma que a busca automática usa ([`zeebx::audio::soundfont::pastas_padrao`]).
+/// sistema. É a mesma que a busca automática usa ([`dreamyemu::audio::soundfont::pastas_padrao`]).
 fn pasta_de_bancos(sistema: &Path) -> PathBuf {
     StoragePaths::for_frontend(sistema, Some(sistema))
         .device
         .join("soundfonts")
 }
 
-/// Os nomes dos `.sf2` da pasta de bancos, em ordem, para a opção `zeebx_soundfont`. Vazio quando
+/// Os nomes dos `.sf2` da pasta de bancos, em ordem, para a opção `dreamyemu_soundfont`. Vazio quando
 /// o frontend não diz a pasta de sistema.
 fn bancos_da_pasta_do_sistema() -> Vec<String> {
     let Some(sistema) = diretorio(ENV_GET_SYSTEM_DIRECTORY) else {
         return Vec::new();
     };
-    zeebx::audio::soundfont::candidatos_em(&[pasta_de_bancos(&sistema)])
+    dreamyemu::audio::soundfont::candidatos_em(&[pasta_de_bancos(&sistema)])
         .into_iter()
         .filter_map(|caminho| caminho.file_name()?.to_str().map(str::to_owned))
         .collect()
@@ -1922,7 +1922,7 @@ fn texto_c_permanente(texto: &str) -> *const c_char {
     Box::leak(std::ffi::CString::new(texto).unwrap_or_default().into_boxed_c_str()).as_ptr()
 }
 
-/// O banco escolhido na opção `zeebx_soundfont`, dentro da `pasta` de bancos. `None` é o
+/// O banco escolhido na opção `dreamyemu_soundfont`, dentro da `pasta` de bancos. `None` é o
 /// automático.
 fn banco_da_opcao(valor: Option<&str>, pasta: &Path) -> Option<PathBuf> {
     valor
@@ -1931,9 +1931,9 @@ fn banco_da_opcao(valor: Option<&str>, pasta: &Path) -> Option<PathBuf> {
 }
 
 /// Consulta a política de síntese MIDI configurada no frontend RetroArch.
-unsafe fn le_opcao_midi_backend() -> zeebx::audio::MidiBackend {
+unsafe fn le_opcao_midi_backend() -> dreamyemu::audio::MidiBackend {
     let mut consulta = RetroVariable {
-        key: c"zeebx_midi_backend".as_ptr(),
+        key: c"dreamyemu_midi_backend".as_ptr(),
         value: std::ptr::null(),
     };
     // SAFETY: chamada ao callback environ e leitura de string C válida entregue pelo frontend.
@@ -1942,11 +1942,11 @@ unsafe fn le_opcao_midi_backend() -> zeebx::audio::MidiBackend {
     };
     if ok {
         let val_str = unsafe { CStr::from_ptr(consulta.value) }.to_string_lossy();
-        if let Ok(backend) = val_str.parse::<zeebx::audio::MidiBackend>() {
+        if let Ok(backend) = val_str.parse::<dreamyemu::audio::MidiBackend>() {
             return backend;
         }
     }
-    zeebx::audio::MidiBackend::Auto
+    dreamyemu::audio::MidiBackend::Auto
 }
 
 /// Lê o valor de uma opção do core como texto. `None` quando o frontend não tem a chave.
@@ -1975,7 +1975,7 @@ unsafe fn le_opcao(chave: &CStr) -> Option<String> {
 /// Devolve `None` quando a chave não existe ou não é número: o frontend pode ser antigo, e um
 /// valor estragado não pode virar silêncio sem aviso — quem chama mantém o que já tinha.
 unsafe fn le_opcao_volume() -> Option<f32> {
-    volume_de_texto(&unsafe { le_opcao(c"zeebx_volume") }?)
+    volume_de_texto(&unsafe { le_opcao(c"dreamyemu_volume") }?)
 }
 
 /// Lê um número inteiro de uma opção, preso à faixa que o motor aceita.
@@ -2018,7 +2018,7 @@ fn pede_callback_de_audio() -> bool {
         )
     };
     if aceito {
-        log("Zeebx: frameskip automático pediu o aviso de buffer de áudio ao frontend");
+        log("Dreamyemu: frameskip automático pediu o aviso de buffer de áudio ao frontend");
         // Seis quadros a 60 Hz: a faixa que a própria `libretro.h` recomenda (seis a oito) para
         // o aviso de estouro chegar com folga suficiente para o core reagir a tempo.
         let latencia_ms: u32 = 96;
@@ -2032,7 +2032,7 @@ fn pede_callback_de_audio() -> bool {
         // **Degrada sozinho, sem quebrar nada.** Sem o callback, `AUDIO_ESTOURO_PROVAVEL` nunca
         // muda de `false`, e o modo Automático se comporta como Desligado — nunca pula. É pior
         // que funcionar, mas melhor que um frontend velho impedir o core de rodar.
-        aviso("Zeebx: frontend não aceita o aviso de buffer de áudio; frameskip automático não vai pular quadro nenhum");
+        aviso("Dreamyemu: frontend não aceita o aviso de buffer de áudio; frameskip automático não vai pular quadro nenhum");
     }
     aceito
 }
@@ -2096,7 +2096,7 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
     // [`Frameskip`]: reler o modo só quando algo mudou é barato, mas a decisão em si (que quadro
     // pular) precisa de um contador ou do aviso do frontend, e os dois valem a cada quadro, não
     // só quando o usuário mexe no menu.
-    if let Some(limite) = unsafe { le_opcao(c"zeebx_limite_fps") }
+    if let Some(limite) = unsafe { le_opcao(c"dreamyemu_limite_fps") }
         .as_deref()
         .and_then(LimiteFps::de_texto)
     {
@@ -2107,7 +2107,7 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
         estado.limite_fps = limite;
     }
 
-    if let Some(modo) = unsafe { le_opcao(c"zeebx_frameskip") }
+    if let Some(modo) = unsafe { le_opcao(c"dreamyemu_frameskip") }
         .as_deref()
         .and_then(Frameskip::de_texto)
     {
@@ -2129,11 +2129,11 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
     if let Some(volume) = unsafe { le_opcao_volume() } {
         estado.mixer.set_master(volume, false);
     }
-    if let Some(neblina) = unsafe { le_opcao(c"zeebx_neblina") }.as_deref().and_then(ligado_de_texto) {
+    if let Some(neblina) = unsafe { le_opcao(c"dreamyemu_neblina") }.as_deref().and_then(ligado_de_texto) {
         estado.session.define_neblina(neblina);
     }
     if let Some(descartar) =
-        unsafe { le_opcao(c"zeebx_descarte_de_tiles") }.as_deref().and_then(ligado_de_texto)
+        unsafe { le_opcao(c"dreamyemu_descarte_de_tiles") }.as_deref().and_then(ligado_de_texto)
     {
         estado.session.define_descarte_de_tiles(descartar);
     }
@@ -2142,7 +2142,7 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
     // memória, e o perfil é sobre desempenho. O rasterizador também fica de fora — ele só muda ao
     // recarregar, e forçar processador tiraria a placa de quem tem uma GPU capaz; a opção separada
     // continua sendo o escape para quem precisa dela.
-    let perfil_portatil = perfil_e_portatil(unsafe { le_opcao(c"zeebx_perfil") }.as_deref());
+    let perfil_portatil = perfil_e_portatil(unsafe { le_opcao(c"dreamyemu_perfil") }.as_deref());
 
     // **Um número só, dois mecanismos.** Abaixo de 1x quem reduz é o rasterizador de
     // processador (superfície menor, ampliada na apresentação); acima de 1x quem amplia é o de
@@ -2153,7 +2153,7 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
     // opção à mão — o perfil é sobre desempenho, e este é o item de desempenho que faltava nele.
     let texto_escala = match perfil_portatil {
         true => Some("0.5".to_string()),
-        false => unsafe { le_opcao(c"zeebx_resolucao_interna") },
+        false => unsafe { le_opcao(c"dreamyemu_resolucao_interna") },
     };
     match texto_escala.as_deref().map(str::trim) {
         Some("0.5") | Some("0,5") => {
@@ -2177,40 +2177,40 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
     // diante, e é por isso que não pedem reinício — mas também por isso o efeito não é imediato
     // como o do volume, e os rótulos dizem isso.
     let taxa = if perfil_portatil {
-        Some(zeebx::audio::midi::RATE)
+        Some(dreamyemu::audio::midi::RATE)
     } else {
-        unsafe { le_opcao(c"zeebx_soundfont_taxa") }
+        unsafe { le_opcao(c"dreamyemu_soundfont_taxa") }
             .as_deref()
             .and_then(|texto| texto.trim().parse::<u32>().ok())
     };
     if let Some(taxa) = taxa {
-        zeebx::audio::soundfont::define_taxa(taxa);
+        dreamyemu::audio::soundfont::define_taxa(taxa);
     }
     let vozes = if perfil_portatil {
         Some(48)
     } else {
-        unsafe { le_opcao(c"zeebx_midi_vozes") }
+        unsafe { le_opcao(c"dreamyemu_midi_vozes") }
             .as_deref()
             .and_then(|texto| numero_de_texto(texto, 8, 256))
     };
     if let Some(vozes) = vozes {
-        zeebx::audio::soundfont::define_vozes(vozes);
+        dreamyemu::audio::soundfont::define_vozes(vozes);
     }
-    if let Some(efeitos) = unsafe { le_opcao(c"zeebx_midi_efeitos") }
+    if let Some(efeitos) = unsafe { le_opcao(c"dreamyemu_midi_efeitos") }
         .as_deref()
         .and_then(ligado_de_texto)
     {
-        zeebx::audio::soundfont::define_efeitos(efeitos);
+        dreamyemu::audio::soundfont::define_efeitos(efeitos);
     }
     let mib = if perfil_portatil {
         Some(8)
     } else {
-        unsafe { le_opcao(c"zeebx_cache_de_som_mb") }
+        unsafe { le_opcao(c"dreamyemu_cache_de_som_mb") }
             .as_deref()
             .and_then(|texto| numero_de_texto(texto, 1, 256))
     };
     if let Some(mib) = mib {
-        zeebx::machine::define_teto_do_cache_de_som(mib * 1024 * 1024);
+        dreamyemu::machine::define_teto_do_cache_de_som(mib * 1024 * 1024);
     }
 
     // **As duas melhorias entram na mesma chamada**, porque a API do motor as recebe juntas:
@@ -2219,10 +2219,10 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
         (Some(1), Some(1))
     } else {
         (
-            unsafe { le_opcao(c"zeebx_antialias") }
+            unsafe { le_opcao(c"dreamyemu_antialias") }
                 .as_deref()
                 .and_then(|texto| numero_de_texto(texto, 1, 16)),
-            unsafe { le_opcao(c"zeebx_filtro_anisotropico") }
+            unsafe { le_opcao(c"dreamyemu_filtro_anisotropico") }
                 .as_deref()
                 .and_then(|texto| numero_de_texto(texto, 1, 16)),
         )
@@ -2374,7 +2374,7 @@ pub unsafe extern "C" fn retro_get_system_info(info: *mut RetroSystemInfo) {
     // SAFETY: o frontend passou um ponteiro válido para preencher.
     unsafe {
         *info = RetroSystemInfo {
-            library_name: c"Zeebx".as_ptr(),
+            library_name: c"Dreamyemu".as_ptr(),
             library_version: concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char,
             valid_extensions: c"mod|zip|7z".as_ptr(),
             need_fullpath: true,
@@ -2423,7 +2423,7 @@ pub unsafe extern "C" fn retro_load_game(game: *const RetroGameInfo) -> bool {
         .to_string_lossy()
         .into_owned();
     let Some(save_dir) = diretorio(ENV_GET_SAVE_DIRECTORY) else {
-        log_com_nivel(3, "Zeebx: o frontend não informou diretório de saves; recusando carregar.");
+        log_com_nivel(3, "Dreamyemu: o frontend não informou diretório de saves; recusando carregar.");
         return false;
     };
     let sistema = diretorio(ENV_GET_SYSTEM_DIRECTORY);
@@ -2433,14 +2433,14 @@ pub unsafe extern "C" fn retro_load_game(game: *const RetroGameInfo) -> bool {
     let storage = StoragePaths::for_frontend(&save_dir, sistema.as_deref());
     if let Err(erro) = storage.create_dirs() {
         log(&format!(
-            "Zeebx: sem permissão em {} / {}: {erro}",
+            "Dreamyemu: sem permissão em {} / {}: {erro}",
             storage.saves.display(),
             storage.cache.display()
         ));
         return false;
     }
     log(&format!(
-        "Zeebx: saves em {}, sistema em {}",
+        "Dreamyemu: saves em {}, sistema em {}",
         storage.saves.display(),
         storage.cache.display()
     ));
@@ -2458,13 +2458,13 @@ pub unsafe extern "C" fn retro_load_game(game: *const RetroGameInfo) -> bool {
     let mut formato = PIXEL_FORMAT_RGB565;
     let alvo = &mut formato as *mut u32 as *mut c_void;
     if !unsafe { environ(ENV_SET_PIXEL_FORMAT, alvo) } {
-        log_com_nivel(3, "Zeebx: o frontend não aceita RGB565.");
+        log_com_nivel(3, "Dreamyemu: o frontend não aceita RGB565.");
         return false;
     }
     // Uma chamada por quadro em vez de doze, quando o frontend entrega a máscara.
     let bitmasks = unsafe { environ(ENV_GET_INPUT_BITMASKS, std::ptr::null_mut()) };
     log(&format!(
-        "Zeebx: botões por {}",
+        "Dreamyemu: botões por {}",
         match bitmasks {
             true => "máscara de bits",
             false => "consulta individual",
@@ -2488,7 +2488,7 @@ pub unsafe extern "C" fn retro_load_game(game: *const RetroGameInfo) -> bool {
             true
         }
         Err(erro) => {
-            log_com_nivel(3, &format!("Zeebx: não deu para abrir {caminho}: {erro}"));
+            log_com_nivel(3, &format!("Dreamyemu: não deu para abrir {caminho}: {erro}"));
             false
         }
     }
@@ -2498,7 +2498,7 @@ pub unsafe extern "C" fn retro_load_game(game: *const RetroGameInfo) -> bool {
 unsafe fn carrega(
     caminho: &str,
     storage: &StoragePaths,
-    portas: [Option<Aparelho>; zeebx::input::PORTAS],
+    portas: [Option<Aparelho>; dreamyemu::input::PORTAS],
     path: PathBuf,
 ) -> Result<Core, StartError> {
     // **A ordem importa: a biblioteca e a fonte vêm antes da sessão.**
@@ -2518,14 +2518,14 @@ unsafe fn carrega(
     if !jogos.is_empty()
         && let Some(pasta) = &pasta
     {
-        let _ = zeebx::library::sync_catalog(&zeebx::library::scan(pasta));
+        let _ = dreamyemu::library::sync_catalog(&dreamyemu::library::scan(pasta));
     }
     let instalados = instalados_da_biblioteca(&jogos);
     #[cfg(test)]
     JOGOS_VISTOS.store(jogos.len() as u32, std::sync::atomic::Ordering::Relaxed);
     let fonte = prepara_fonte(storage, &jogos);
     match &fonte {
-        Some(onde) => log(&format!("Zeebx: fonte do sistema em {}", onde.display())),
+        Some(onde) => log(&format!("Dreamyemu: fonte do sistema em {}", onde.display())),
         None => aviso(&format!(
             "Sem tectoy.ttf no acervo ({} jogos): o texto do sistema não será desenhado",
             jogos.len()
@@ -2535,23 +2535,23 @@ unsafe fn carrega(
     // da raiz de sistema que o frontend entregou: sem esta linha, quem instala o core não tem como
     // saber o caminho, e "o banco não funciona" fica indistinguível de "o arquivo está no lugar
     // errado".
-    zeebx::audio::soundfont::define_banco(banco_da_opcao(
-        unsafe { le_opcao(c"zeebx_soundfont") }.as_deref(),
+    dreamyemu::audio::soundfont::define_banco(banco_da_opcao(
+        unsafe { le_opcao(c"dreamyemu_soundfont") }.as_deref(),
         &storage.device.join("soundfonts"),
     ));
-    log(&zeebx::audio::soundfont::relato(&storage.device));
+    log(&dreamyemu::audio::soundfont::relato(&storage.device));
 
     // **O perfil vem antes das opções que ele substitui.** "Portátil" existe porque dez botões
     // soltos não é o que um aparelho de mão precisa — é um único ajuste que junta o que a
     // investigação em ARM fraco (RG40XX-H) mediu como o que mais custa: sintetizador pesado,
     // banco de amostras em taxa alta, muitas vozes, cache grande, supersampling.
-    let perfil_portatil = perfil_e_portatil(unsafe { le_opcao(c"zeebx_perfil") }.as_deref());
+    let perfil_portatil = perfil_e_portatil(unsafe { le_opcao(c"dreamyemu_perfil") }.as_deref());
     let midi_backend = if perfil_portatil {
-        zeebx::audio::MidiBackend::Timbres
+        dreamyemu::audio::MidiBackend::Timbres
     } else {
         unsafe { le_opcao_midi_backend() }
     };
-    log(&format!("Zeebx: sintetizador MIDI selecionado: {:?}{}", midi_backend, if perfil_portatil { " (perfil Portátil)" } else { "" }));
+    log(&format!("Dreamyemu: sintetizador MIDI selecionado: {:?}{}", midi_backend, if perfil_portatil { " (perfil Portátil)" } else { "" }));
 
     // **Pede o contexto de placa ao frontend, se ele tiver um.** Quem aceita é ele; nós só usamos
     // mais tarde, quando o `context_reset` chegar. Recusar aqui não muda nada: a sessão de
@@ -2561,9 +2561,9 @@ unsafe fn carrega(
     // aceita o contexto e desenha errado — ou não desenha: nesse caso o recuo automático não
     // dispara, porque do ponto de vista do core nada falhou. Sem a opção, o único remédio é trocar
     // o frontend ou o aparelho.
-    let rasterizador = unsafe { le_opcao(c"zeebx_rasterizador") }.unwrap_or_default();
+    let rasterizador = unsafe { le_opcao(c"dreamyemu_rasterizador") }.unwrap_or_default();
     if rasterizador.trim().eq_ignore_ascii_case("software") {
-        log("Zeebx: rasterizador fixado no processador pela opção do core; nenhum contexto de placa será pedido");
+        log("Dreamyemu: rasterizador fixado no processador pela opção do core; nenhum contexto de placa será pedido");
     } else {
         pede_o_contexto_de_placa();
     }
@@ -2587,35 +2587,35 @@ unsafe fn carrega(
             jogos
                 .iter()
                 .filter_map(|(classe, caminho)| {
-                    Some((*classe, zeebx::library::id_do_modulo(caminho)?))
+                    Some((*classe, dreamyemu::library::id_do_modulo(caminho)?))
                 }),
         );
         log(&format!(
-            "Zeebx: {} jogo(s) instalados a partir de {}",
+            "Dreamyemu: {} jogo(s) instalados a partir de {}",
             jogos.len(),
             pasta.as_deref().unwrap_or(std::path::Path::new(".")).display()
         ));
     }
     // **A captura de serial, quando pedida.** É o mesmo instrumento da varredura
-    // (`ZEEBX_ROM_SERIAL`) e do `run` (`--serial`): classes criadas, bancos abertos, SQL,
+    // (`DREAMYEMU_ROM_SERIAL`) e do `run` (`--serial`): classes criadas, bancos abertos, SQL,
     // propriedades de widget e a árvore de widgets da primeira tecla. Sem ele, quem está no
     // aparelho vê o jogo e não vê o que o applet faz por dentro — e foi com ele que se mediu, na
     // Z-Wheel, que o caminho do core reage à tecla mas pergunta `class_id = -1` (0 linhas) onde a
     // varredura resolve o foco (`class_id = 17359702`, o Alien Breaker) e pede a abertura.
     // O censo do acessador por classe, o mesmo da varredura — e ele é **opt-in** lá pelos mesmos
     // motivos: acrescenta uma seção ao relatório, e o relatório entra na linha de base.
-    if std::env::var("ZEEBX_CORE_SELETORES").is_ok() {
+    if std::env::var("DREAMYEMU_CORE_SELETORES").is_ok() {
         session.liga_censo_de_widgets();
     }
-    if let Ok(caminho) = std::env::var("ZEEBX_CORE_SERIAL") {
+    if let Ok(caminho) = std::env::var("DREAMYEMU_CORE_SERIAL") {
         match session.liga_serial(std::path::Path::new(&caminho)) {
-            Ok(()) => log(&format!("Zeebx: captura de serial em {caminho}")),
-            Err(erro) => aviso(&format!("Zeebx: não deu para abrir a captura de serial: {erro}")),
+            Ok(()) => log(&format!("Dreamyemu: captura de serial em {caminho}")),
+            Err(erro) => aviso(&format!("Dreamyemu: não deu para abrir a captura de serial: {erro}")),
         }
     }
     // A Z-Wheel é o shell: quando ela é o conteúdo, guardar o caminho é o que permite voltar a
     // ela depois que um jogo termina — o que o console faz.
-    let z_wheel = match session.classe() == zeebx::session::Z_WHEEL {
+    let z_wheel = match session.classe() == dreamyemu::session::Z_WHEEL {
         true => Some(path.clone()),
         false => None,
     };
@@ -2647,7 +2647,7 @@ unsafe fn carrega(
         avisou_tamanho: false,
         midi_backend,
         select_antes: false,
-        pad_antes: [Pad::default(); zeebx::input::PORTAS],
+        pad_antes: [Pad::default(); dreamyemu::input::PORTAS],
         quadros_apos_parar: 0,
         parou: false,
     };
@@ -2670,7 +2670,7 @@ fn biblioteca(caminho: &str) -> (Option<PathBuf>, Vec<(u32, PathBuf)>) {
         .map(std::path::Path::to_path_buf);
     let mut jogos: Vec<(u32, PathBuf)> = Vec::new();
     let mut vistas: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    for jogo in pasta.as_deref().map(zeebx::library::scan).unwrap_or_default() {
+    for jogo in pasta.as_deref().map(dreamyemu::library::scan).unwrap_or_default() {
         let Some(classe) = jogo.clsid else {
             continue;
         };
@@ -2686,7 +2686,7 @@ fn instalados_da_biblioteca(jogos: &[(u32, PathBuf)]) -> Vec<(u32, String)> {
     jogos
         .iter()
         .filter_map(|(classe, caminho)| {
-            Some((*classe, zeebx::library::id_do_modulo(caminho)?))
+            Some((*classe, dreamyemu::library::id_do_modulo(caminho)?))
         })
         .collect()
 }
@@ -2696,17 +2696,17 @@ fn instalados_da_biblioteca(jogos: &[(u32, PathBuf)]) -> Vec<(u32, String)> {
 /// Sai do cache quando a Z-Wheel já foi extraída e, quando não foi, do próprio pacote compactado —
 /// extraindo **só** o arquivo, porque não vale materializar o pacote inteiro por 190 KB.
 fn prepara_fonte(storage: &StoragePaths, jogos: &[(u32, PathBuf)]) -> Option<PathBuf> {
-    zeebx::loader::archive::fonte_do_sistema_em(&storage.cache, &storage.device).or_else(|| {
+    dreamyemu::loader::archive::fonte_do_sistema_em(&storage.cache, &storage.device).or_else(|| {
         let candidatos: Vec<&PathBuf> = jogos
             .iter()
-            .filter(|(classe, _)| *classe == zeebx::session::Z_WHEEL)
+            .filter(|(classe, _)| *classe == dreamyemu::session::Z_WHEEL)
             .map(|(_, caminho)| caminho)
             .collect();
         let pacote = candidatos
             .iter()
-            .find(|caminho| zeebx::loader::archive::embalado(caminho))
+            .find(|caminho| dreamyemu::loader::archive::embalado(caminho))
             .or_else(|| candidatos.first())?;
-        zeebx::loader::archive::instala_fonte_do_pacote(pacote, &storage.device)
+        dreamyemu::loader::archive::instala_fonte_do_pacote(pacote, &storage.device)
     })
 }
 
@@ -2803,7 +2803,7 @@ pub extern "C" fn retro_run() {
             estado.frameskip_callback_pedido = pede_callback_de_audio();
         }
         if estado.session.leu_pixels() && !estado.frameskip_leitura_pixels_avisada {
-            aviso("Zeebx: frameskip de rasterização foi desativado neste jogo porque ele usa glReadPixels");
+            aviso("Dreamyemu: frameskip de rasterização foi desativado neste jogo porque ele usa glReadPixels");
             estado.frameskip_leitura_pixels_avisada = true;
         }
         // A própria `libretro.h` diz o que fazer com o aviso de áudio: **é** a decisão do
@@ -2840,10 +2840,10 @@ pub extern "C" fn retro_run() {
             let antes = estado.path.clone();
             if let Err(erro) = troca_para(estado, &antes, false) {
                 aviso(&format!(
-                    "Zeebx: o contexto de placa se perdeu e nem no processador deu para reabrir: {erro}"
+                    "Dreamyemu: o contexto de placa se perdeu e nem no processador deu para reabrir: {erro}"
                 ));
             } else {
-                aviso("Zeebx: o frontend trocou o contexto de vídeo; seguindo no processador");
+                aviso("Dreamyemu: o frontend trocou o contexto de vídeo; seguindo no processador");
             }
         }
         // Em modo de placa, o alvo do desenho é o framebuffer que o frontend indica **a cada
@@ -2880,14 +2880,14 @@ pub extern "C" fn retro_run() {
                 .map(|(_, caminho)| caminho.clone());
             match alvo {
                 Some(caminho) => {
-                    let e_z_wheel = classe == zeebx::session::Z_WHEEL;
+                    let e_z_wheel = classe == dreamyemu::session::Z_WHEEL;
                     match troca_para(estado, &caminho, !e_z_wheel) {
                         Ok(()) => log(&format!(
-                            "Zeebx: o shell pediu {classe:#010x}; abrindo {}",
+                            "Dreamyemu: o shell pediu {classe:#010x}; abrindo {}",
                             caminho.display()
                         )),
                         Err(erro) => log(&format!(
-                            "Zeebx: o shell pediu {classe:#010x} e não deu para abrir: {erro}"
+                            "Dreamyemu: o shell pediu {classe:#010x} e não deu para abrir: {erro}"
                         )),
                     }
                 }
@@ -2901,10 +2901,10 @@ pub extern "C" fn retro_run() {
         let select = le_select(0);
         if select != estado.select_antes {
             estado.select_antes = select;
-            estado.session.set_key(zeebx::input::avk::CLR, select);
+            estado.session.set_key(dreamyemu::input::avk::CLR, select);
         }
         // Entrada primeiro: o guest lê o controle dentro do quadro que vai rodar.
-        for porta in 0..zeebx::input::PORTAS {
+        for porta in 0..dreamyemu::input::PORTAS {
             if estado.portas[porta].is_none() {
                 continue;
             }
@@ -2918,7 +2918,7 @@ pub extern "C" fn retro_run() {
             // abre e o pedido sai. É a diferença entre "o controle chega ao guest" e "o controle
             // chega ao applet do jeito que ele lê".
             for (avk, apertada) in
-                zeebx::input::teclas_do_controle(&estado.pad_antes[porta], &pad)
+                dreamyemu::input::teclas_do_controle(&estado.pad_antes[porta], &pad)
             {
                 estado.session.set_key(avk, apertada);
             }
@@ -2944,16 +2944,16 @@ pub extern "C" fn retro_run() {
                     .session
                     .stopped_reason()
                     .unwrap_or_else(|| "sem motivo relatado".to_string());
-                log(&format!("Zeebx: parou em {relogio} ms virtuais: {motivo}"));
+                log(&format!("Dreamyemu: parou em {relogio} ms virtuais: {motivo}"));
                 // O log do próprio jogo é o que costuma nomear o motivo da parada; as últimas
                 // linhas vão para o frontend, que é onde alguém vai olhar.
                 let relato = estado.session.log();
                 for linha in relato.iter().rev().take(6).rev() {
-                    log(&format!("Zeebx:   {linha}"));
+                    log(&format!("Dreamyemu:   {linha}"));
                 }
                 let memoria = estado.session.memory();
                 log(&format!(
-                    "Zeebx:   heap {} bytes, {} objetos",
+                    "Dreamyemu:   heap {} bytes, {} objetos",
                     memoria.0, memoria.1
                 ));
                 // No console, sair de um jogo devolve o controle à Z-Wheel, que é outro applet
@@ -2962,7 +2962,7 @@ pub extern "C" fn retro_run() {
                 // ou o frontend encerra o conteúdo. Ver o plano, seção de desfecho.
                 if let Some(classe) = estado.session.take_launch_request() {
                     log(&format!(
-                        "Zeebx: o shell pediu para abrir {classe:#010x}; trocar de conteúdo dentro do core ainda não existe"
+                        "Dreamyemu: o shell pediu para abrir {classe:#010x}; trocar de conteúdo dentro do core ainda não existe"
                     ));
                 }
                 estado.quadros_apos_parar = 0;
@@ -2995,7 +2995,7 @@ pub extern "C" fn retro_run() {
         if !estado.avisou_tamanho && (largura != 640 || altura != 480) {
             estado.avisou_tamanho = true;
             log(&format!(
-                "Zeebx: quadro {largura}x{altura}, fora dos 640x480 do console"
+                "Dreamyemu: quadro {largura}x{altura}, fora dos 640x480 do console"
             ));
         }
         let mut quadro = std::mem::take(&mut estado.frame);
@@ -3091,8 +3091,8 @@ pub extern "C" fn retro_run() {
             if agora >= ultimo + 1_000 {
                 let antes = AUDIO_ANTERIOR.swap(total, Ordering::Relaxed);
                 AUDIO_ULTIMO_MS.store(agora, Ordering::Relaxed);
-                zeebx::registro!(
-                    zeebx::registro::Nivel::Informacao,
+                dreamyemu::registro!(
+                    dreamyemu::registro::Nivel::Informacao,
                     "audio",
                     "audio: {} quadros por segundo real ({:.0}% de 44100); o frontend aceitou {}/{} neste quadro",
                     (total - antes) * 1_000 / (agora - ultimo).max(1),
@@ -3126,13 +3126,13 @@ pub extern "C" fn retro_run() {
                     // pedir ao frontend que encerre o conteúdo.
                     let voltar = estado.z_wheel.clone().filter(|_| {
                         estado.aberto_pela_z_wheel
-                            || estado.session.classe() == zeebx::session::Z_WHEEL
+                            || estado.session.classe() == dreamyemu::session::Z_WHEEL
                     });
                     match voltar {
                         Some(caminho) => match troca_para(estado, &caminho, false) {
-                            Ok(()) => log("Zeebx: fim do jogo; de volta à Z-Wheel"),
+                            Ok(()) => log("Dreamyemu: fim do jogo; de volta à Z-Wheel"),
                             Err(erro) => {
-                                log_com_nivel(2, &format!("Zeebx: não deu para voltar à Z-Wheel: {erro}"));
+                                log_com_nivel(2, &format!("Dreamyemu: não deu para voltar à Z-Wheel: {erro}"));
                                 dispensar = true;
                             }
                         },
@@ -3145,7 +3145,7 @@ pub extern "C" fn retro_run() {
     if dispensar {
         // Encerrar o conteúdo é o desfecho que a ABI oferece: o frontend volta ao menu dele, em
         // vez de ficar mostrando para sempre o último quadro de um jogo que acabou.
-        log("Zeebx: jogo terminado; pedindo ao frontend para encerrar o conteúdo");
+        log("Dreamyemu: jogo terminado; pedindo ao frontend para encerrar o conteúdo");
         unsafe {
             environ(ENV_SHUTDOWN, std::ptr::null_mut());
         }
@@ -3178,7 +3178,7 @@ pub extern "C" fn retro_reset() {
     // SAFETY: mesma montagem do carregamento, na thread de `retro_run`.
     match unsafe { carrega(&texto, &storage, portas, caminho.clone()) } {
         Ok(novo) => *guard = Some(EstadoDoCore(novo)),
-        Err(erro) => log(&format!("Zeebx: reset falhou: {erro}")),
+        Err(erro) => log(&format!("Dreamyemu: reset falhou: {erro}")),
     }
 }
 
@@ -3192,7 +3192,7 @@ pub extern "C" fn retro_set_controller_port_device(port: u32, device: u32) {
         return;
     };
     let porta = port as usize;
-    if porta >= zeebx::input::PORTAS {
+    if porta >= dreamyemu::input::PORTAS {
         return;
     }
     estado.portas[porta] = aparelho_do_dispositivo(device);
@@ -3221,7 +3221,7 @@ pub extern "C" fn retro_serialize_size() -> usize {
         return 0;
     };
     if let Err(motivo) = estado.session.pode_salvar() {
-        aviso(&format!("Zeebx: não dá para salvar agora: {motivo}"));
+        aviso(&format!("Dreamyemu: não dá para salvar agora: {motivo}"));
         return 0;
     }
     let arquivo = estado.session.grava_estado();
@@ -3250,7 +3250,7 @@ pub extern "C" fn retro_serialize(data: *mut c_void, size: usize) -> bool {
     };
     if arquivo.len() > size {
         aviso(&format!(
-            "Zeebx: o estado tem {} bytes e o frontend ofereceu {size}",
+            "Dreamyemu: o estado tem {} bytes e o frontend ofereceu {size}",
             arquivo.len()
         ));
         return false;
@@ -3284,7 +3284,7 @@ pub extern "C" fn retro_unserialize(data: *const c_void, size: usize) -> bool {
     match estado.session.restaura_estado(arquivo) {
         Ok(()) => true,
         Err(erro) => {
-            aviso(&format!("Zeebx: o save state foi recusado: {erro}"));
+            aviso(&format!("Dreamyemu: o save state foi recusado: {erro}"));
             false
         }
     }
@@ -3340,11 +3340,11 @@ mod testes {
     /// `include/libretro.h` declara, na ordem dele.
     #[test]
     fn a_entrada_do_retropad_chega_ao_guest() {
-        let Ok(caminho) = std::env::var("ZEEBX_TESTE_ROM") else {
-            eprintln!("sem ZEEBX_TESTE_ROM: nada a testar");
+        let Ok(caminho) = std::env::var("DREAMYEMU_TESTE_ROM") else {
+            eprintln!("sem DREAMYEMU_TESTE_ROM: nada a testar");
             return;
         };
-        let pasta = std::env::temp_dir().join(format!("zeebx-entrada-{}", std::process::id()));
+        let pasta = std::env::temp_dir().join(format!("dreamyemu-entrada-{}", std::process::id()));
         std::fs::create_dir_all(&pasta).unwrap();
         let _ = PASTA.set(CString::new(pasta.to_string_lossy().to_string()).unwrap());
         let caminho_c = CString::new(caminho.clone()).unwrap();
@@ -3363,9 +3363,9 @@ mod testes {
             retro_set_input_poll(Some(sem_poll));
             retro_set_input_state(Some(entrada));
             retro_init();
-            // O aparelho da porta decide o mapeamento do pad. `ZEEBX_TESTE_APARELHO=zpad` usa o
+            // O aparelho da porta decide o mapeamento do pad. `DREAMYEMU_TESTE_APARELHO=zpad` usa o
             // Z-Pad, que é o controle do console — a Z-Wheel é um app do Zeebo e o lê assim.
-            let aparelho = match std::env::var("ZEEBX_TESTE_APARELHO").as_deref() {
+            let aparelho = match std::env::var("DREAMYEMU_TESTE_APARELHO").as_deref() {
                 Ok("zpad") | Ok("ZPAD") => DEVICE_ZPAD,
                 _ => DEVICE_JOYPAD,
             };
@@ -3374,7 +3374,7 @@ mod testes {
             // Quanto tempo esperar antes de mandar entrada. A Z-Wheel leva mais que os jogos para
             // chegar à tela interativa — a varredura a pega com zero quadros aos seis segundos —,
             // e mandar botão para uma tela de carregamento não diz nada sobre o caminho de entrada.
-            let espera: u32 = std::env::var("ZEEBX_TESTE_ESPERA")
+            let espera: u32 = std::env::var("DREAMYEMU_TESTE_ESPERA")
                 .ok()
                 .and_then(|n| n.parse().ok())
                 .unwrap_or(180);
@@ -3559,7 +3559,7 @@ mod testes {
     /// registro: um erro de escrita desligando o log sem avisar é o pior desfecho.
     #[test]
     fn o_nivel_de_log_da_opcao_vira_o_ajuste_do_nucleo() {
-        use zeebx::registro::{Ajuste, Nivel};
+        use dreamyemu::registro::{Ajuste, Nivel};
 
         assert_eq!(Ajuste::de_texto("desligado"), Some(Ajuste::Desligado));
         assert_eq!(Ajuste::de_texto("aviso"), Some(Ajuste::Ate(Nivel::Aviso)));
@@ -3641,7 +3641,7 @@ mod testes {
     static BOTAO: AtomicU32 = AtomicU32::new(u32::MAX);
     /// A pasta que o frontend de teste entrega como sistema e como saves.
     static PASTA: OnceLock<CString> = OnceLock::new();
-    /// O sistema de fora, quando `ZEEBX_CORE_SISTEMA` aponta para uma árvore de aparelho real.
+    /// O sistema de fora, quando `DREAMYEMU_CORE_SISTEMA` aponta para uma árvore de aparelho real.
     static SISTEMA: OnceLock<CString> = OnceLock::new();
     /// A assinatura de cada quadro entregue, na ordem.
     static ASSINATURAS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
@@ -3716,7 +3716,7 @@ mod testes {
                 }
             }
             ENV_GET_SYSTEM_DIRECTORY | ENV_GET_SAVE_DIRECTORY => {
-                // O sistema pode vir de fora, e vem por `ZEEBX_CORE_SISTEMA`: é assim que o teste
+                // O sistema pode vir de fora, e vem por `DREAMYEMU_CORE_SISTEMA`: é assim que o teste
                 // encontra o aparelho de verdade, com os jogos instalados, e consegue exercitar o
                 // ciclo da Z-Wheel de ponta a ponta. Sem a variável, cada um recebe a pasta
                 // temporária do teste.
@@ -3792,7 +3792,7 @@ mod testes {
         // botão mudo, sem erro em lugar nenhum.
         for (_, nome, _) in BOTOES_DO_RETROPAD {
             assert!(
-                zeebx::input::BUTTON_NAMES.contains(&nome),
+                dreamyemu::input::BUTTON_NAMES.contains(&nome),
                 "{nome} não é botão do console"
             );
         }
@@ -3805,7 +3805,7 @@ mod testes {
     /// standalone já tinha a zona morta, e foi por isso que a medida no harness passava).
     #[test]
     fn o_manche_parado_no_centro_nao_apaga_o_direcional_espelhado() {
-        use zeebx::input::{AXIS_CURSO, DPAD, Pad};
+        use dreamyemu::input::{AXIS_CURSO, DPAD, Pad};
 
         let parado = |_: u32, _: u32| 0i32;
         let mut pad = Pad::default();
@@ -3911,28 +3911,28 @@ mod testes {
     /// teste **não** escolhe entre elas: quem fecha o ciclo é o RetroArch, com controle de
     /// verdade, que é o que o item 8 do plano pede.
     ///
-    /// **Sem `ZEEBX_CORE_ROM` ele não roda.** ROM não entra na árvore do repositório, e um teste
+    /// **Sem `DREAMYEMU_CORE_ROM` ele não roda.** ROM não entra na árvore do repositório, e um teste
     /// que baixa conteúdo sozinho é pior que um teste que não roda.
     ///
     /// ```bash
-    /// ZEEBX_CORE_ROM="roms/Z-Wheel.zip" cargo test -p zeebx-libretro -- --nocapture
+    /// DREAMYEMU_CORE_ROM="roms/Z-Wheel.zip" cargo test -p dreamyemu-libretro -- --nocapture
     /// ```
     #[test]
     fn a_abi_do_core_roda_uma_rom() {
-        let Ok(caminho) = std::env::var("ZEEBX_CORE_ROM") else {
-            eprintln!("sem ZEEBX_CORE_ROM: nada a rodar");
+        let Ok(caminho) = std::env::var("DREAMYEMU_CORE_ROM") else {
+            eprintln!("sem DREAMYEMU_CORE_ROM: nada a rodar");
             return;
         };
-        let pasta = std::env::temp_dir().join(format!("zeebx-core-{}", std::process::id()));
+        let pasta = std::env::temp_dir().join(format!("dreamyemu-core-{}", std::process::id()));
         std::fs::create_dir_all(&pasta).unwrap();
         let _ = PASTA.set(CString::new(pasta.to_string_lossy().to_string()).unwrap());
-        if let Ok(fora) = std::env::var("ZEEBX_CORE_SISTEMA") {
+        if let Ok(fora) = std::env::var("DREAMYEMU_CORE_SISTEMA") {
             let _ = SISTEMA.set(CString::new(fora).unwrap());
         }
         QUADROS.store(0, Ordering::Relaxed);
 
         let caminho_c = CString::new(caminho.clone()).unwrap();
-        let quadros_pedidos = std::env::var("ZEEBX_CORE_QUADROS")
+        let quadros_pedidos = std::env::var("DREAMYEMU_CORE_QUADROS")
             .ok()
             .and_then(|n| n.parse().ok())
             .unwrap_or(60u32);
@@ -4077,7 +4077,7 @@ mod testes {
     ///
     /// **O tempo é a primeira armadilha.** A grade de jogos da Z-Wheel só aparece depois de ~37 s
     /// de relógio virtual, mais de duas mil voltas; o teste que existia rodava 60 quadros e
-    /// concluía que nenhum botão abria nada. `ZEEBX_CORE_QUADROS` diz quantos quadros rodar antes
+    /// concluía que nenhum botão abria nada. `DREAMYEMU_CORE_QUADROS` diz quantos quadros rodar antes
     /// de começar a apertar.
     ///
     /// **A segunda armadilha é a pasta.** O jogo que a roda abre é o que estiver em foco, e o
@@ -4085,33 +4085,33 @@ mod testes {
     /// ao lado da Z-Wheel, um título que termina sozinho. Medido na varredura: o `Zeebo Clube` e o
     /// `Zeebo App` são os dois que fazem isso.
     ///
-    /// **Sem `ZEEBX_CORE_ROM` ele não roda**, pela mesma razão dos outros: ROM não entra na árvore.
+    /// **Sem `DREAMYEMU_CORE_ROM` ele não roda**, pela mesma razão dos outros: ROM não entra na árvore.
     #[test]
     fn o_retropad_vira_tecla_do_console_no_caminho_do_core() {
-        let Ok(caminho) = std::env::var("ZEEBX_CORE_ROM") else {
-            eprintln!("sem ZEEBX_CORE_ROM: nada a percorrer");
+        let Ok(caminho) = std::env::var("DREAMYEMU_CORE_ROM") else {
+            eprintln!("sem DREAMYEMU_CORE_ROM: nada a percorrer");
             return;
         };
         // **A tradução, provada no crate do core.** Dois pads construídos à mão: a função é a
         // mesma do motor, mas quem a chama aqui é o core, e um erro de tipo ou de nome apareceria
         // exatamente neste ponto.
         {
-            let antes = zeebx::input::Pad::default();
-            let mut agora = zeebx::input::Pad::default();
-            let indice = zeebx::input::Pad::button_by_name("b1").expect("b1 existe");
+            let antes = dreamyemu::input::Pad::default();
+            let mut agora = dreamyemu::input::Pad::default();
+            let indice = dreamyemu::input::Pad::button_by_name("b1").expect("b1 existe");
             agora.press(indice, true);
-            let teclas = zeebx::input::teclas_do_controle(&antes, &agora);
+            let teclas = dreamyemu::input::teclas_do_controle(&antes, &agora);
             eprintln!("tradução de b1: {teclas:?}");
             assert_eq!(
                 teclas,
-                vec![(zeebx::input::avk::CONFIRMA, true)],
+                vec![(dreamyemu::input::avk::CONFIRMA, true)],
                 "a tradução do controle não produziu a tecla do confirmar"
             );
         }
-        let pasta = std::env::temp_dir().join(format!("zeebx-ciclo-{}", std::process::id()));
+        let pasta = std::env::temp_dir().join(format!("dreamyemu-ciclo-{}", std::process::id()));
         std::fs::create_dir_all(&pasta).unwrap();
         let _ = PASTA.set(CString::new(pasta.to_string_lossy().to_string()).unwrap());
-        if let Ok(fora) = std::env::var("ZEEBX_CORE_SISTEMA") {
+        if let Ok(fora) = std::env::var("DREAMYEMU_CORE_SISTEMA") {
             let _ = SISTEMA.set(CString::new(fora).unwrap());
         }
         QUADROS.store(0, Ordering::Relaxed);
@@ -4120,7 +4120,7 @@ mod testes {
         BOTAO.store(u32::MAX, Ordering::Relaxed);
 
         let caminho_c = CString::new(caminho.clone()).unwrap();
-        let ate_a_grade = std::env::var("ZEEBX_CORE_QUADROS")
+        let ate_a_grade = std::env::var("DREAMYEMU_CORE_QUADROS")
             .ok()
             .and_then(|n| n.parse().ok())
             .unwrap_or(2600u32);
@@ -4147,7 +4147,7 @@ mod testes {
             let quem = CLASSE_ATUAL.load(Ordering::Relaxed);
             assert_eq!(
                 quem,
-                zeebx::session::Z_WHEEL,
+                dreamyemu::session::Z_WHEEL,
                 "no começo quem roda é a Z-Wheel, não {quem:#010x}"
             );
             eprintln!("rodando no começo: {quem:#010x} (Z-Wheel)");
@@ -4158,14 +4158,14 @@ mod testes {
             // segundos de distância: a roda tem transições armadas em 400 ms e um pulso próprio, e
             // teclar a cada 0,4 s atropela a tela seguinte. Aqui cada passo segura 8 quadros e
             // espera um segundo e meio antes do próximo.
-            // **O roteiro, por `ZEEBX_CORE_TECLAS` quando se quer outro.** Formato `ms:id`, com o
+            // **O roteiro, por `DREAMYEMU_CORE_TECLAS` quando se quer outro.** Formato `ms:id`, com o
             // `id` do RetroPad (`1` é o `Y`, o confirmar do console), separado por vírgula — o
-            // mesmo espírito do `ZEEBX_ROM_TECLAS` da varredura, que é onde o ciclo foi provado
+            // mesmo espírito do `DREAMYEMU_ROM_TECLAS` da varredura, que é onde o ciclo foi provado
             // primeiro. Sem a variável, vale o roteiro da doc: confirmar em "Jogar", descer às
             // capas, andar duas capas à direita e confirmar. Ele depende de **onde a grade põe o
             // foco**, e por isso não serve para toda pasta: com dois jogos, o foco já está no
             // primeiro e as setas o tiram de lá.
-            let roteiro: Vec<(u32, u32)> = match std::env::var("ZEEBX_CORE_TECLAS") {
+            let roteiro: Vec<(u32, u32)> = match std::env::var("DREAMYEMU_CORE_TECLAS") {
                 Ok(texto) => texto
                     .split(',')
                     .filter_map(|parte| {
@@ -4270,7 +4270,7 @@ mod testes {
             for _ in 0..900 {
                 retro_run();
                 rodando = CLASSE_ATUAL.load(Ordering::Relaxed);
-                if rodando != 0 && rodando != zeebx::session::Z_WHEEL {
+                if rodando != 0 && rodando != dreamyemu::session::Z_WHEEL {
                     break;
                 }
             }
@@ -4289,7 +4289,7 @@ mod testes {
             let mut voltou = false;
             for _ in 0..9000 {
                 retro_run();
-                if CLASSE_ATUAL.load(Ordering::Relaxed) == zeebx::session::Z_WHEEL {
+                if CLASSE_ATUAL.load(Ordering::Relaxed) == dreamyemu::session::Z_WHEEL {
                     voltou = true;
                     break;
                 }
@@ -4322,22 +4322,22 @@ mod testes {
     /// porque é isso que um save state promete. Comparar campos seria mais fraco: o que o jogador
     /// vê é o jogo continuar do mesmo ponto.
     ///
-    /// **Sem `ZEEBX_CORE_ROM` ele não roda**, pela mesma razão do teste acima.
+    /// **Sem `DREAMYEMU_CORE_ROM` ele não roda**, pela mesma razão do teste acima.
     #[test]
     fn o_save_state_atravessa_a_abi() {
-        let Ok(caminho) = std::env::var("ZEEBX_CORE_ROM") else {
-            eprintln!("sem ZEEBX_CORE_ROM: nada a salvar");
+        let Ok(caminho) = std::env::var("DREAMYEMU_CORE_ROM") else {
+            eprintln!("sem DREAMYEMU_CORE_ROM: nada a salvar");
             return;
         };
-        let pasta = std::env::temp_dir().join(format!("zeebx-estado-{}", std::process::id()));
+        let pasta = std::env::temp_dir().join(format!("dreamyemu-estado-{}", std::process::id()));
         std::fs::create_dir_all(&pasta).unwrap();
         let _ = PASTA.set(CString::new(pasta.to_string_lossy().to_string()).unwrap());
-        if let Ok(fora) = std::env::var("ZEEBX_CORE_SISTEMA") {
+        if let Ok(fora) = std::env::var("DREAMYEMU_CORE_SISTEMA") {
             let _ = SISTEMA.set(CString::new(fora).unwrap());
         }
         QUADROS.store(0, Ordering::Relaxed);
         let caminho_c = CString::new(caminho.clone()).unwrap();
-        let quadros_pedidos = std::env::var("ZEEBX_CORE_QUADROS")
+        let quadros_pedidos = std::env::var("DREAMYEMU_CORE_QUADROS")
             .ok()
             .and_then(|n| n.parse().ok())
             .unwrap_or(60u32);

@@ -38,7 +38,7 @@ targets = [
     "wasm32-unknown-emscripten",
 ]
 
-# Os crates do próprio Zeebx (todos `publish = false`) não são de terceiros: a licença deles é o
+# Os crates do próprio Dreamyemu (todos `publish = false`) não são de terceiros: a licença deles é o
 # LICENSE da raiz.
 private = { ignore = true }
 

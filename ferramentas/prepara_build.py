@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Confere o que falta para compilar o Zeebx e diz o comando de instalação.
+"""Confere o que falta para compilar o Dreamyemu e diz o comando de instalação.
 
 O `cargo` não basta: o `unicorn-engine` compila o QEMU em C e o `dynarmic` compila um JIT em C++20
 na hora. Quando falta ferramenta, o erro que aparece é só "failed to run custom build command for
@@ -130,7 +130,7 @@ def main():
     qt = versao_do_qt()
     qt_serve = qt is not None and tuple(int(n) for n in qt.split(".")[:2]) >= QT_MINIMO
     print(
-        f"  [{'ok ' if qt_serve else 'FALTA'}] Qt {qt or '6':<9} o zeebx-qt (6.{QT_MINIMO[1]} ou mais novo)"
+        f"  [{'ok ' if qt_serve else 'FALTA'}] Qt {qt or '6':<9} o dreamyemu-qt (6.{QT_MINIMO[1]} ou mais novo)"
     )
     if not qt_serve:
         faltando.append("qt6")

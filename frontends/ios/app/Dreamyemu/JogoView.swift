@@ -21,7 +21,7 @@ struct MapaDeBotoes {
 
     static func resolver() -> MapaDeBotoes {
         func indice(_ nome: String) -> UInt32 {
-            let achado = nome.withCString { zeebx_ios_botao_por_nome($0) }
+            let achado = nome.withCString { dreamyemu_ios_botao_por_nome($0) }
             precondition(achado >= 0, "o núcleo não conhece o botão \(nome)")
             return UInt32(achado)
         }
@@ -35,7 +35,7 @@ struct MapaDeBotoes {
 }
 
 struct JogoView: UIViewControllerRepresentable {
-    @ObservedObject var modelo: ZeebxModelo
+    @ObservedObject var modelo: DreamyemuModelo
 
     func makeUIViewController(context: Context) -> JogoControlador {
         JogoControlador(modelo: modelo)
@@ -50,10 +50,10 @@ struct JogoView: UIViewControllerRepresentable {
 
 /// A tela do jogo: o quadro, o toque e o controle.
 ///
-/// O `CADisplayLink` é quem chama `zeebx_ios_passo`. Ele corre na linha principal, que é a
+/// O `CADisplayLink` é quem chama `dreamyemu_ios_passo`. Ele corre na linha principal, que é a
 /// mesma da lista — o ponteiro não atravessa linhas.
 final class JogoControlador: UIViewController {
-    let modelo: ZeebxModelo
+    let modelo: DreamyemuModelo
     let mapa = MapaDeBotoes.resolver()
     let imagem = UIImageView()
     var elo: CADisplayLink?
@@ -61,7 +61,7 @@ final class JogoControlador: UIViewController {
     var segurando: Set<UInt32> = []
     var acabou = false
 
-    init(modelo: ZeebxModelo) {
+    init(modelo: DreamyemuModelo) {
         self.modelo = modelo
         super.init(nibName: nil, bundle: nil)
     }
@@ -109,18 +109,18 @@ final class JogoControlador: UIViewController {
     @objc func volta() {
         guard !acabou else { return }
         aplicaEntrada()
-        let codigo = zeebx_ios_passo(modelo.app)
-        if codigo == ZEEBX_PAROU {
+        let codigo = dreamyemu_ios_passo(modelo.app)
+        if codigo == DREAMYEMU_PAROU {
             acabou = true
             parar()
-            let mensagem = zeebx_ios_erro(modelo.app).map { String(cString: $0) } ?? ""
+            let mensagem = dreamyemu_ios_erro(modelo.app).map { String(cString: $0) } ?? ""
             modelo.erro = mensagem.isEmpty ? nil : mensagem
             modelo.jogando = false
             return
         }
         var largura: UInt32 = 0
         var altura: UInt32 = 0
-        if let ponteiro = zeebx_ios_quadro(modelo.app, &largura, &altura) {
+        if let ponteiro = dreamyemu_ios_quadro(modelo.app, &largura, &altura) {
             imagem.image = Self.imagem(de: ponteiro, largura: Int(largura), altura: Int(altura))
         }
     }
@@ -129,14 +129,14 @@ final class JogoControlador: UIViewController {
         let fisico = GCController.controllers().lazy.compactMap(\.extendedGamepad).first
         for (indice, apertado) in leitura(fisico) {
             let ligado = apertado || segurando.contains(indice)
-            zeebx_ios_botao(modelo.app, indice, ligado ? 1 : 0)
+            dreamyemu_ios_botao(modelo.app, indice, ligado ? 1 : 0)
         }
         let (x, y) = eixos(fisico)
-        zeebx_ios_eixo(modelo.app, 0, x)
-        zeebx_ios_eixo(modelo.app, 1, y)
+        dreamyemu_ios_eixo(modelo.app, 0, x)
+        dreamyemu_ios_eixo(modelo.app, 1, y)
         if let direito = fisico?.rightThumbstick {
-            zeebx_ios_eixo(modelo.app, 2, Self.curso(direito.xAxis.value))
-            zeebx_ios_eixo(modelo.app, 3, Self.curso(-direito.yAxis.value))
+            dreamyemu_ios_eixo(modelo.app, 2, Self.curso(direito.xAxis.value))
+            dreamyemu_ios_eixo(modelo.app, 3, Self.curso(-direito.yAxis.value))
         }
     }
 

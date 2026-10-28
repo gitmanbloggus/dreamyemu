@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gera o `THIRD-PARTY-NOTICES.txt`: as licenças de tudo o que os binários do Zeebx levam dentro.
+"""Gera o `THIRD-PARTY-NOTICES.txt`: as licenças de tudo o que os binários do Dreamyemu levam dentro.
 
 MIT, BSD, Apache, Zlib, OFL e a LGPL do Qt pedem que o aviso de copyright e o texto da licença
 acompanhem o binário. O arquivo é versionado e vai em todos os pacotes da release; o
@@ -44,10 +44,10 @@ EXTERNOS_DO_DYNARMIC = [
 ]
 
 CABECALHO = """\
-Third-party software in Zeebx
+Third-party software in Dreamyemu
 =============================
 
-The Zeebx source code is GPL-2.0-or-later (see LICENSE). The binaries are distributed under the
+The Dreamyemu source code is GPL-2.0-or-later (see LICENSE). The binaries are distributed under the
 GPLv3 (see LICENSE-GPL3), because they link Apache-2.0 libraries listed below.
 
 This file lists the licenses of the third-party software included in those binaries. It is
@@ -58,7 +58,7 @@ QT = """\
 ================================================================================
 Qt 6 (LGPL-3.0-only)
 
-Used by: the Qt frontend (zeebx-qt). The AppImage, the Windows installer and the macOS .dmg ship
+Used by: the Qt frontend (dreamyemu-qt). The AppImage, the Windows installer and the macOS .dmg ship
 the Qt libraries QtCore, QtGui, QtQml and QtQuick, dynamically linked; the .deb uses the Qt from
 the system. You may replace them with your own build of Qt.
 

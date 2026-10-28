@@ -1,7 +1,7 @@
 //! Os controles desenhados na tela: a sobreposição do jogo e o editor que muda as peças de lugar.
 //!
 //! A conta de onde fica cada peça e do que o dedo aperta é do núcleo, em
-//! [`zeebx::input::toque`]; daqui é o desenho e a leitura do toque.
+//! [`dreamyemu::input::toque`]; daqui é o desenho e a leitura do toque.
 //!
 //! **O toque do jogo não passa pelo egui.** O egui recebe o dedo como um ponteiro só, e jogar
 //! pede dois ao mesmo tempo: o polegar segurando o direcional e o outro apertando o 1. Por isso a
@@ -9,8 +9,8 @@
 
 use android_activity::input::{Axis, MotionAction, MotionEvent, ToolType};
 
-use zeebx::input::toque::{self, Elemento, Peca};
-use zeebx::ui::settings::{ControlesNaTela, ModoDosControlesNaTela};
+use dreamyemu::input::toque::{self, Elemento, Peca};
+use dreamyemu::ui::settings::{ControlesNaTela, ModoDosControlesNaTela};
 
 use crate::tema::ALVO;
 use crate::{Emulador, Onde};
@@ -18,7 +18,7 @@ use crate::{Emulador, Onde};
 /// O que a sobreposição sabe entre um quadro e outro.
 #[derive(Default)]
 pub struct Sobreposicao {
-    /// Os botões que os dedos apertam agora, um bit por índice do [`zeebx::input::Pad`]. É
+    /// Os botões que os dedos apertam agora, um bit por índice do [`dreamyemu::input::Pad`]. É
     /// somado ao controle físico, e não escrito por cima dele: tirar o dedo da tela não pode
     /// soltar um botão que está apertado no controle.
     pub botoes: u32,
@@ -33,7 +33,7 @@ pub struct Sobreposicao {
     /// [`toque::pega_manche`]. E o id, e não a posição na lista, porque a posição de um dedo muda
     /// quando outro levanta.
     manches: [Option<i32>; 2],
-    /// Onde os manches estão, de `-1` a `1`, na ordem de [`zeebx::input::Pad::axes`].
+    /// Onde os manches estão, de `-1` a `1`, na ordem de [`dreamyemu::input::Pad::axes`].
     pub eixos: [f32; 4],
     /// As peças como ficaram no último desenho.
     ///
@@ -202,7 +202,7 @@ fn desenha(
                 // egui ganham uma linha clara na emenda, que é a borda suavizada de cada uma.
                 let braco = mx * 0.34;
                 let ponta = mx * 0.95;
-                let [cima, baixo, esquerda, direita] = zeebx::input::DPAD;
+                let [cima, baixo, esquerda, direita] = dreamyemu::input::DPAD;
                 let ret = |x0: f32, y0: f32, x1: f32, y1: f32| {
                     egui::Rect::from_min_max(
                         centro + egui::vec2(x0, y0),

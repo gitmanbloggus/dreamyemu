@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// Libretro não usa este caminho: fornece [`crate::storage::StoragePaths`] explicitamente. Ele
 /// fica aqui apenas para os wrappers legados não puxarem `ui::settings` para dentro do motor.
 pub fn config_dir() -> PathBuf {
-    const APP_DIR: &str = "Zeebx";
+    const APP_DIR: &str = "Dreamyemu";
     let home = std::env::var_os("HOME").map(PathBuf::from);
     if cfg!(target_os = "windows") {
         if let Some(appdata) = std::env::var_os("APPDATA") {

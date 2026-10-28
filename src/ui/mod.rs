@@ -13,7 +13,7 @@
 /// primeira versão da tela "sobre" do Android trazia a própria cópia destes dois endereços, e o
 /// do Discord estava simplesmente errado — um convite inventado, que não levava a lugar nenhum.
 /// Uma constante duplicada não avisa quando as cópias divergem; uma constante só, sim.
-pub const REPOSITORIO: &str = "https://github.com/ZeebxTeam/zeebx-emu";
+pub const REPOSITORIO: &str = "https://github.com/gitmanbloggus/dreamyemu";
 
 /// O convite do servidor de conversa.
 pub const DISCORD: &str = "https://discord.gg/D96HjsKTPa";

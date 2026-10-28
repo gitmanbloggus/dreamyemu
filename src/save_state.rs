@@ -34,7 +34,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-/// Assinatura do arquivo. Quatro bytes que dizem "isto é um save state do Zeebx".
+/// Assinatura do arquivo. Quatro bytes que dizem "isto é um save state do Dreamyemu".
 pub const ASSINATURA: [u8; 4] = *b"ZBXS";
 
 /// Versão do formato. Sobe quando o **significado** das seções muda, não quando uma seção nova
@@ -68,7 +68,7 @@ impl std::fmt::Display for Erro {
         match self {
             Erro::Assinatura(bytes) => write!(
                 f,
-                "não é um save state do Zeebx: os quatro primeiros bytes são {bytes:02x?}, \
+                "não é um save state do Dreamyemu: os quatro primeiros bytes são {bytes:02x?}, \
                  e deviam ser {ASSINATURA:02x?}"
             ),
             Erro::Versao {

@@ -12,7 +12,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use zeebx::video::display::Framebuffer;
+use dreamyemu::video::display::Framebuffer;
 
 use crate::config::{Despejo, Formato};
 
@@ -26,7 +26,7 @@ pub struct Saida {
 }
 
 enum Destino {
-    /// A saída padrão. É o que um `zeebx-headless jogo.mod | meu-frontend` usa.
+    /// A saída padrão. É o que um `dreamyemu-headless jogo.mod | meu-frontend` usa.
     Padrao,
     /// Um arquivo, que pode ser um FIFO — e aí não passa por disco.
     Arquivo(std::fs::File),

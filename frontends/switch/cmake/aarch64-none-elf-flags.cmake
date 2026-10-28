@@ -3,18 +3,18 @@ add_compile_definitions(_DEFAULT_SOURCE)
 # to a libnx JIT alias before this target is compiled.
 execute_process(
   COMMAND bash "${CMAKE_CURRENT_LIST_DIR}/../patch-dynarmic-jit.sh" "${CMAKE_SOURCE_DIR}"
-  RESULT_VARIABLE _zeebx_jit_patch
+  RESULT_VARIABLE _dreamyemu_jit_patch
 )
-if(NOT _zeebx_jit_patch EQUAL 0)
-  message(FATAL_ERROR "Switch JIT patch failed (${_zeebx_jit_patch})")
+if(NOT _dreamyemu_jit_patch EQUAL 0)
+  message(FATAL_ERROR "Switch JIT patch failed (${_dreamyemu_jit_patch})")
 endif()
-add_compile_definitions(ZEEBX_SWITCH_JIT)
+add_compile_definitions(DREAMYEMU_SWITCH_JIT)
 # newlib has no sys/mman.h. Oaknut's code allocator includes it.
 include_directories(BEFORE SYSTEM "${CMAKE_CURRENT_LIST_DIR}/../compat")
 
 # Horizon has no POSIX signals or ucontext. Dynarmic records the Linux handler
 # before this file's directory has finished, so replace it once the target exists.
-function(_zeebx_generic_exception_handler)
+function(_dreamyemu_generic_exception_handler)
   if(NOT TARGET dynarmic)
     return()
   endif()
@@ -52,4 +52,4 @@ function(_zeebx_generic_exception_handler)
     set_property(TARGET dynarmic PROPERTY ${_prop} "${_kept}")
   endforeach()
 endfunction()
-cmake_language(DEFER CALL _zeebx_generic_exception_handler)
+cmake_language(DEFER CALL _dreamyemu_generic_exception_handler)

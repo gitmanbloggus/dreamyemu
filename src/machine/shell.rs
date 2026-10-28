@@ -732,7 +732,7 @@ impl<C: CpuBackend> Machine<C> {
             // **`AEECLSID_DOWNLOAD`.** Ver [`AEECLSID_DOWNLOAD`]: a classe do `IDownload`, que
             // o SDK lista como `AEECLSID_PRIV` (= `QVERSION` = `0x01000000`). Atendida pela
             // sonda por enquanto — o que a Z-Wheel chama nela sai no relatório com
-            // `ZEEBX_ROM_SONDA`, e é essa medição que diz quais slots valem implementar.
+            // `DREAMYEMU_ROM_SONDA`, e é essa medição que diz quais slots valem implementar.
             AEECLSID_DOWNLOAD => {
                 let object = self.new_object(Interface::Probe)?;
                 if object == 0 {

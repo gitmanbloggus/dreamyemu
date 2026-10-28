@@ -7,18 +7,18 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A1000000000000000000000C /* ZeebxApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* ZeebxApp.swift */; };
+		A1000000000000000000000C /* DreamyemuApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* DreamyemuApp.swift */; };
 		A1000000000000000000000D /* BibliotecaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* BibliotecaView.swift */; };
 		A1000000000000000000000E /* JogoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* JogoView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		A10000000000000000000001 /* ZeebxApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZeebxApp.swift; sourceTree = "<group>"; };
+		A10000000000000000000001 /* DreamyemuApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DreamyemuApp.swift; sourceTree = "<group>"; };
 		A10000000000000000000002 /* BibliotecaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BibliotecaView.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* JogoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JogoView.swift; sourceTree = "<group>"; };
 		A10000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		A10000000000000000000005 /* Zeebx-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Zeebx-Bridging-Header.h"; sourceTree = "<group>"; };
-		A10000000000000000000009 /* Zeebx.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zeebx.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000005 /* Dreamyemu-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Dreamyemu-Bridging-Header.h"; sourceTree = "<group>"; };
+		A10000000000000000000009 /* Dreamyemu.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Dreamyemu.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -32,22 +32,22 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		A10000000000000000000006 /* Zeebx */ = {
+		A10000000000000000000006 /* Dreamyemu */ = {
 			isa = PBXGroup;
 			children = (
-				A10000000000000000000001 /* ZeebxApp.swift */,
+				A10000000000000000000001 /* DreamyemuApp.swift */,
 				A10000000000000000000002 /* BibliotecaView.swift */,
 				A10000000000000000000003 /* JogoView.swift */,
-				A10000000000000000000005 /* Zeebx-Bridging-Header.h */,
+				A10000000000000000000005 /* Dreamyemu-Bridging-Header.h */,
 				A10000000000000000000004 /* Info.plist */,
 			);
-			path = Zeebx;
+			path = Dreamyemu;
 			sourceTree = "<group>";
 		};
 		A10000000000000000000007 = {
 			isa = PBXGroup;
 			children = (
-				A10000000000000000000006 /* Zeebx */,
+				A10000000000000000000006 /* Dreamyemu */,
 				A10000000000000000000008 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -55,7 +55,7 @@
 		A10000000000000000000008 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A10000000000000000000009 /* Zeebx.app */,
+				A10000000000000000000009 /* Dreamyemu.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -63,9 +63,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A1000000000000000000000A /* Zeebx */ = {
+		A1000000000000000000000A /* Dreamyemu */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A10000000000000000000016 /* Build configuration list for PBXNativeTarget "Zeebx" */;
+			buildConfigurationList = A10000000000000000000016 /* Build configuration list for PBXNativeTarget "Dreamyemu" */;
 			buildPhases = (
 				A10000000000000000000011 /* Compila o núcleo */,
 				A1000000000000000000000F /* Sources */,
@@ -75,9 +75,9 @@
 			);
 			dependencies = (
 			);
-			name = Zeebx;
-			productName = Zeebx;
-			productReference = A10000000000000000000009 /* Zeebx.app */;
+			name = Dreamyemu;
+			productName = Dreamyemu;
+			productReference = A10000000000000000000009 /* Dreamyemu.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -94,7 +94,7 @@
 					};
 				};
 			};
-			buildConfigurationList = A10000000000000000000017 /* Build configuration list for PBXProject "Zeebx" */;
+			buildConfigurationList = A10000000000000000000017 /* Build configuration list for PBXProject "Dreamyemu" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = "pt-BR";
 			hasScannedForEncodings = 0;
@@ -108,7 +108,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A1000000000000000000000A /* Zeebx */,
+				A1000000000000000000000A /* Dreamyemu */,
 			);
 		};
 /* End PBXProject section */
@@ -124,7 +124,7 @@
 			);
 			name = "Compila o núcleo";
 			outputPaths = (
-				"$(BUILT_PRODUCTS_DIR)/libzeebx_ios.a",
+				"$(BUILT_PRODUCTS_DIR)/libdreamyemu_ios.a",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
@@ -137,7 +137,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000000C /* ZeebxApp.swift in Sources */,
+				A1000000000000000000000C /* DreamyemuApp.swift in Sources */,
 				A1000000000000000000000D /* BibliotecaView.swift in Sources */,
 				A1000000000000000000000E /* JogoView.swift in Sources */,
 			);
@@ -157,7 +157,7 @@
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../include";
-				INFOPLIST_FILE = Zeebx/Info.plist;
+				INFOPLIST_FILE = Dreamyemu/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -166,7 +166,7 @@
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MARKETING_VERSION = 0.4.2;
 				OTHER_LDFLAGS = (
-					"-lzeebx_ios",
+					"-ldreamyemu_ios",
 					"-framework",
 					AudioToolbox,
 					"-framework",
@@ -178,12 +178,12 @@
 					"-framework",
 					AVFoundation,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = io.github.zeebxteam.zeebx;
-				PRODUCT_NAME = Zeebx;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.gitmanbloggus.dreamyemu;
+				PRODUCT_NAME = Dreamyemu;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "Zeebx/Zeebx-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "Dreamyemu/Dreamyemu-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -200,7 +200,7 @@
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../include";
-				INFOPLIST_FILE = Zeebx/Info.plist;
+				INFOPLIST_FILE = Dreamyemu/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -209,7 +209,7 @@
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MARKETING_VERSION = 0.4.2;
 				OTHER_LDFLAGS = (
-					"-lzeebx_ios",
+					"-ldreamyemu_ios",
 					"-framework",
 					AudioToolbox,
 					"-framework",
@@ -221,12 +221,12 @@
 					"-framework",
 					AVFoundation,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = io.github.zeebxteam.zeebx;
-				PRODUCT_NAME = Zeebx;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.gitmanbloggus.dreamyemu;
+				PRODUCT_NAME = Dreamyemu;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "Zeebx/Zeebx-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "Dreamyemu/Dreamyemu-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALIDATE_PRODUCT = YES;
@@ -270,7 +270,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		A10000000000000000000016 /* Build configuration list for PBXNativeTarget "Zeebx" */ = {
+		A10000000000000000000016 /* Build configuration list for PBXNativeTarget "Dreamyemu" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A10000000000000000000012 /* Debug */,
@@ -279,7 +279,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A10000000000000000000017 /* Build configuration list for PBXProject "Zeebx" */ = {
+		A10000000000000000000017 /* Build configuration list for PBXProject "Dreamyemu" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A10000000000000000000014 /* Debug */,

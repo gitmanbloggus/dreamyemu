@@ -2875,11 +2875,11 @@ pub struct Machine<C: CpuBackend> {
 /// `padrao` é o que a configuração diz. A variável de ambiente tem a palavra final porque é por
 /// ela que a medição escolhe o backend na linha de comando, onde não há tela de configuração.
 ///
-/// Valor vazio conta como desligado: um `ZEEBX_GPU=` não deve ligar a placa sem que se tenha
+/// Valor vazio conta como desligado: um `DREAMYEMU_GPU=` não deve ligar a placa sem que se tenha
 /// pedido — foi assim que uma bateria de quatro medições saiu inteira na placa quando metade
 /// devia ser em software.
 fn placa_pedida(padrao: bool) -> bool {
-    match std::env::var("ZEEBX_GPU") {
+    match std::env::var("DREAMYEMU_GPU") {
         Ok(valor) => !valor.is_empty() && valor != "0",
         Err(_) => padrao,
     }
@@ -3225,15 +3225,15 @@ impl<C: CpuBackend> Machine<C> {
             config_items: HashMap::new(),
             network: true,
             // Pelo mesmo motivo, o desvio de servidor também vem do ambiente:
-            // `ZEEBX_SERVIDOR=127.0.0.1:8080`. Sem isso, apontar um jogo para um servidor de
+            // `DREAMYEMU_SERVIDOR=127.0.0.1:8080`. Sem isso, apontar um jogo para um servidor de
             // testes exigiria a porta 80, que pede privilégio.
-            network_to: std::env::var("ZEEBX_SERVIDOR").ok(),
+            network_to: std::env::var("DREAMYEMU_SERVIDOR").ok(),
             // A ponte vem ligada. Ela derrubou o jogo enquanto entregava de dentro do despacho,
             // e por isso ficou desligada por um tempo; com a entrega na fronteira de chamada
             // isso não acontece mais, e deixá-la desligada só criava um caso em que o jogo
-            // parece quebrado por falta de uma variável de ambiente. O `ZEEBX_SEM_PONTE`
+            // parece quebrado por falta de uma variável de ambiente. O `DREAMYEMU_SEM_PONTE`
             // desliga.
-            bridge: std::env::var_os("ZEEBX_SEM_PONTE").is_none(),
+            bridge: std::env::var_os("DREAMYEMU_SEM_PONTE").is_none(),
             pending_response: None,
             pending_end: None,
             delivered: Vec::new(),

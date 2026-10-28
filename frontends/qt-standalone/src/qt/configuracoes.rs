@@ -425,26 +425,26 @@ use std::sync::{Arc, Mutex};
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QList, QRectF, QString, QStringList, QVariant};
 
-use zeebx::egui::Key;
-use zeebx::input::bindings::{Aparelho, AxisSource, CONFIGURABLE, CalibracaoDeMovimento, Source};
-use zeebx::input::gamepads;
-use zeebx::input::sensores;
-use zeebx::input::wiimote::Wiimotes;
-use zeebx::input::{AXIS_CURSO, AXIS_NAMES, Pad};
-use zeebx::ui::entrada::SensorDaPorta;
+use dreamyemu::egui::Key;
+use dreamyemu::input::bindings::{Aparelho, AxisSource, CONFIGURABLE, CalibracaoDeMovimento, Source};
+use dreamyemu::input::gamepads;
+use dreamyemu::input::sensores;
+use dreamyemu::input::wiimote::Wiimotes;
+use dreamyemu::input::{AXIS_CURSO, AXIS_NAMES, Pad};
+use dreamyemu::ui::entrada::SensorDaPorta;
 
-use zeebx::library;
-use zeebx::ui::atualizacao::{self, Resposta};
-use zeebx::ui::partida;
-use zeebx::ui::screenshot;
-use zeebx::ui::settings::{
+use dreamyemu::library;
+use dreamyemu::ui::atualizacao::{self, Resposta};
+use dreamyemu::ui::partida;
+use dreamyemu::ui::screenshot;
+use dreamyemu::ui::settings::{
     self, Atalhos, ModoDaBiblioteca, ModoDaJanela, Proporcao, Scaling, Settings, rotulo_da_resolucao,
     rotulo_de_nivel,
 };
 
-use zeebx::velocidade::rewind::AjustesDoRewind;
-use zeebx::velocidade::turbo::{self, ModoDoTurbo};
-use zeebx::velocidade::{Avanco, Frameskip, LimiteFps, ModoDoAtalho};
+use dreamyemu::velocidade::rewind::AjustesDoRewind;
+use dreamyemu::velocidade::turbo::{self, ModoDoTurbo};
+use dreamyemu::velocidade::{Avanco, Frameskip, LimiteFps, ModoDoAtalho};
 
 use super::nucleo;
 
@@ -1096,8 +1096,8 @@ impl qobject::Configuracoes {
 
     pub fn endereco(&self, qual: &QString) -> QString {
         QString::from(match String::from(qual).as_str() {
-            "discord" => zeebx::ui::DISCORD,
-            _ => zeebx::ui::REPOSITORIO,
+            "discord" => dreamyemu::ui::DISCORD,
+            _ => dreamyemu::ui::REPOSITORIO,
         })
     }
 
@@ -1138,7 +1138,7 @@ fn dono_da_tecla(settings: &Settings, tecla: Key) -> Option<(usize, &'static str
 
 /// O botão do Zeebo, e a porta, que já tem uma origem que satisfaz `e_ela`.
 fn dono(settings: &Settings, e_ela: impl Fn(&Source) -> bool) -> Option<(usize, &'static str)> {
-    (0..zeebx::input::PORTAS).find_map(|porta| {
+    (0..dreamyemu::input::PORTAS).find_map(|porta| {
         let jogador = settings.controls.player(porta)?;
         CONFIGURABLE
             .iter()
@@ -1165,7 +1165,7 @@ impl qobject::Configuracoes {
 /// A aba de controles, sobre a porta em edição.
 impl qobject::Configuracoes {
     fn porta(&self) -> usize {
-        usize::try_from(*self.porta_editada()).unwrap_or(0).min(zeebx::input::PORTAS - 1)
+        usize::try_from(*self.porta_editada()).unwrap_or(0).min(dreamyemu::input::PORTAS - 1)
     }
 
     /// O controle da porta agora, com o teclado desta janela.
@@ -1272,14 +1272,14 @@ impl qobject::Configuracoes {
         let porta = self.porta();
         self.com(|nucleo| {
             let jogador = nucleo.settings.controls.player_mut(porta);
-            *jogador = zeebx::input::bindings::Player::padrao_do_controle(jogador.device.clone());
+            *jogador = dreamyemu::input::bindings::Player::padrao_do_controle(jogador.device.clone());
         });
         self.as_mut().controles_mudaram();
     }
 
     pub fn botoes(&self) -> QStringList {
         // A tecla de turbo se mapeia como um botão, mas não é botão do Zeebo: ver
-        // [`zeebx::velocidade::turbo::BOTAO_DO_TURBO`].
+        // [`dreamyemu::velocidade::turbo::BOTAO_DO_TURBO`].
         let botoes = CONFIGURABLE.iter().chain([&turbo::BOTAO_DO_TURBO]);
         lista_de_textos(botoes.map(|b| b.to_string()).collect())
     }

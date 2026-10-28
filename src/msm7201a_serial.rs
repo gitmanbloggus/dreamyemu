@@ -211,6 +211,22 @@ impl SerialTap {
         self.por_canal.get(&canal).map_or(&[], Vec::as_slice)
     }
 
+    /// TEMP (snapshots): fotografa os canais (linhas parciais no meio
+    /// sobrevivem à retomada). Remove com o CRASHOBJ se os snapshots
+    /// não vingarem.
+    pub(crate) fn foto_canais(&self) -> Vec<(u32, Vec<u8>)> {
+        self.por_canal
+            .iter()
+            .map(|(c, b)| (*c, b.clone()))
+            .collect()
+    }
+
+    /// TEMP (snapshots): restaura os canais (par de `foto_canais`).
+    pub(crate) fn aplica_canais(&mut self, canais: Vec<(u32, Vec<u8>)>) {
+        self.por_canal.clear();
+        self.por_canal.extend(canais);
+    }
+
     /// Drain complete `\n`-terminated lines for a channel.
     ///
     /// Returns `(canal, line bytes without terminator)` in channel order.

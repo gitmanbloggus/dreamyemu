@@ -67,7 +67,7 @@ pub mod soundfont {
     pub fn relato(aparelho: &Path) -> String {
         let pasta = aparelho.join("soundfonts");
         format!(
-            "Zeebx: esta compilação não tem o sintetizador de banco de amostras; o MIDI toca com a \
+            "Dreamyemu: esta compilação não tem o sintetizador de banco de amostras; o MIDI toca com a \
              tabela de timbres (o .sf2 iria em {})",
             pasta.display()
         )
@@ -1192,7 +1192,7 @@ mod testes_do_relato {
     #[cfg(not(feature = "soundfont"))]
     #[test]
     fn o_relato_avisa_que_a_build_nao_tem_banco() {
-        let aparelho = std::env::temp_dir().join("zeebx-aparelho-sem-feature");
+        let aparelho = std::env::temp_dir().join("dreamyemu-aparelho-sem-feature");
         let texto = super::soundfont::relato(&aparelho);
         assert!(
             texto.contains("não tem o sintetizador de banco"),

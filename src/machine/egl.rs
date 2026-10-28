@@ -119,7 +119,7 @@ impl<C: CpuBackend> Machine<C> {
             "Terminate" => (1, gles::EGL_TRUE),
             "QueryString" => {
                 let text = match a[1] {
-                    gles::EGL_VENDOR => "Zeebx",
+                    gles::EGL_VENDOR => "Dreamyemu",
                     gles::EGL_VERSION => "1.1",
                     // A escala de superfície do console. Os jogos procuram o nome por
                     // substring, com o espaço no fim como delimitador — é assim que a string

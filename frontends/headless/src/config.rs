@@ -11,10 +11,10 @@
 
 use std::path::PathBuf;
 
-use zeebx::input::bindings::{Aparelho, AxisSource, Controls, Player, Source};
-use zeebx::registro::Ajuste;
-use zeebx::ui::settings::{Audio, Graphics, ModoDaJanela, Proporcao, Scaling, Settings};
-use zeebx::velocidade::{Frameskip, LimiteFps};
+use dreamyemu::input::bindings::{Aparelho, AxisSource, Controls, Player, Source};
+use dreamyemu::registro::Ajuste;
+use dreamyemu::ui::settings::{Audio, Graphics, ModoDaJanela, Proporcao, Scaling, Settings};
+use dreamyemu::velocidade::{Frameskip, LimiteFps};
 
 use crate::ini::{Ini, Valor, sem_aspas};
 
@@ -88,7 +88,7 @@ impl Default for Headless {
                 destino: None,
                 limite: 0,
             },
-            titulo: "Zeebx".to_string(),
+            titulo: "Dreamyemu".to_string(),
             tamanho: (1280, 960),
             vsync: true,
             roms: None,
@@ -131,7 +131,7 @@ pub fn caminhos_padrao() -> Vec<PathBuf> {
             caminhos.push(dir.join("config.ini"));
         }
     }
-    caminhos.push(zeebx::ui::settings::config_dir().join("config.ini"));
+    caminhos.push(dreamyemu::ui::settings::config_dir().join("config.ini"));
     caminhos
 }
 
@@ -142,7 +142,7 @@ pub fn caminhos_padrao() -> Vec<PathBuf> {
 /// instalação — que some na próxima atualização e não é de ninguém. A pasta de configuração é
 /// de quem rodou, e é onde ele vai procurar depois.
 pub fn onde_criar() -> PathBuf {
-    zeebx::ui::settings::config_dir().join("config.ini")
+    dreamyemu::ui::settings::config_dir().join("config.ini")
 }
 
 /// Lê o arquivo. Um caminho que não existe devolve o padrão, dizendo onde um deveria estar.
@@ -219,7 +219,7 @@ pub fn modelo() -> String {
 /// As seções `[porta1]` e `[porta2]` como o arquivo as escreve, a partir dos padrões.
 fn secoes_das_portas() -> String {
     let controls = Controls::default();
-    (0..zeebx::input::PORTAS)
+    (0..dreamyemu::input::PORTAS)
         .map(|indice| {
             let padrao = Player::default();
             let player = controls.player(indice).unwrap_or(&padrao);
@@ -257,7 +257,7 @@ fn secao_da_porta(indice: usize, player: &Player) -> String {
 
     // Na ordem em que a interface os mostra, e não na alfabética do mapa: `up, down, left,
     // right` lidos em sequência são um direcional, e `b1, b2, b3, b4` são os quatro botões.
-    for botao in zeebx::input::bindings::CONFIGURABLE {
+    for botao in dreamyemu::input::bindings::CONFIGURABLE {
         let origens: Vec<String> = player.sources(botao).iter().map(escreve_origem).collect();
         linhas.push(format!("{botao} = {}", origens.join(", ")));
     }
@@ -278,7 +278,7 @@ fn secao_da_porta(indice: usize, player: &Player) -> String {
     // Na ordem do console — x, y, z, rz —, e não na alfabética do mapa: `x` e `y` são um
     // manche, `z` e `rz` são o outro, e lê-los fora de par não quer dizer nada.
     let padroes = Player::default_axes();
-    for eixo in zeebx::input::AXIS_NAMES {
+    for eixo in dreamyemu::input::AXIS_NAMES {
         let Some(origem) = padroes.get(eixo) else {
             continue;
         };
@@ -512,8 +512,8 @@ pub fn de_texto(texto: &str) -> Lido {
         if !nomes_de_porta().contains(&sobrando) {
             avisos.push(format!(
                 "[{sobrando}]: the console has {} ports, from port1 to port{}",
-                zeebx::input::PORTAS,
-                zeebx::input::PORTAS
+                dreamyemu::input::PORTAS,
+                dreamyemu::input::PORTAS
             ));
         }
     }
@@ -530,7 +530,7 @@ pub fn de_texto(texto: &str) -> Lido {
 }
 
 fn nomes_de_porta() -> Vec<String> {
-    (1..=zeebx::input::PORTAS).map(|n| format!("port{n}")).collect()
+    (1..=dreamyemu::input::PORTAS).map(|n| format!("port{n}")).collect()
 }
 
 /// Uma porta: que aparelho o console vê, qual controle do host a alimenta, e o mapeamento.
@@ -553,7 +553,7 @@ fn le_porta(ini: &mut Ini, secao: &str, player: &mut Player, avisos: &mut Vec<St
     player.ligada = ligada;
 
     // O direcional espelhado nos eixos: o mesmo ajuste da caixa na tela de controles do desktop
-    // e do `zeebx_dpad_to_analog_pN` do núcleo. Sem esta linha o frontend sem janela não teria
+    // e do `dreamyemu_dpad_to_analog_pN` do núcleo. Sem esta linha o frontend sem janela não teria
     // como ligá-lo — o `Controls` chegaria com o padrão e ninguém saberia por quê.
     let mut espelha = player.direcional_nos_eixos;
     booleano(ini, secao, "dpad_to_analog", &mut espelha, avisos);
@@ -574,7 +574,7 @@ fn le_porta(ini: &mut Ini, secao: &str, player: &mut Player, avisos: &mut Vec<St
     // a chave **substitui** o padrão daquele botão: quem redefine `b1` quer o que escreveu, não
     // o que escreveu mais o `Z` de fábrica.
     let fabrica = Player::default();
-    for botao in zeebx::input::bindings::CONFIGURABLE {
+    for botao in dreamyemu::input::bindings::CONFIGURABLE {
         let Some(v) = ini.pega(secao, botao) else {
             continue;
         };
@@ -605,7 +605,7 @@ fn le_porta(ini: &mut Ini, secao: &str, player: &mut Player, avisos: &mut Vec<St
     }
 
     // Os eixos analógicos do console. `axis_x = LeftStickX` ou `axis_y = LeftStickY:inverted`.
-    for eixo in zeebx::input::AXIS_NAMES {
+    for eixo in dreamyemu::input::AXIS_NAMES {
         let chave = format!("axis_{eixo}");
         let Some(v) = ini.pega(secao, &chave) else {
             continue;
@@ -717,7 +717,7 @@ fn oito(
 #[cfg(test)]
 mod testes {
     use super::*;
-    use zeebx::ui::settings::ModoDaJanela;
+    use dreamyemu::ui::settings::ModoDaJanela;
 
     /// Um arquivo vazio precisa dar exatamente as opções de fábrica: é o que faz um
     /// `config.ini` ausente ser a mesma coisa que um `config.ini` sem nada dentro.
@@ -906,7 +906,7 @@ mod testes {
         let lido = de_texto(&texto);
         let porta = lido.settings.controls.player(0).unwrap();
         assert_eq!(porta.device.as_deref(), Some("Xbox Wireless Controller"));
-        for botao in zeebx::input::bindings::CONFIGURABLE {
+        for botao in dreamyemu::input::bindings::CONFIGURABLE {
             assert!(
                 porta.sources(botao).iter().any(|s| matches!(s, Source::Button { .. } | Source::Axis { .. })),
                 "`{botao}` não tem origem no controle: {:?}",
@@ -946,13 +946,13 @@ mod testes {
     #[test]
     fn as_portas_saem_com_todos_os_botoes() {
         let texto = modelo();
-        for porta in 1..=zeebx::input::PORTAS {
+        for porta in 1..=dreamyemu::input::PORTAS {
             assert!(texto.contains(&format!("[port{porta}]")), "falta a porta {porta}");
         }
         let lido = de_texto(&texto);
-        for indice in 0..zeebx::input::PORTAS {
+        for indice in 0..dreamyemu::input::PORTAS {
             let player = lido.settings.controls.player(indice).unwrap();
-            for botao in zeebx::input::bindings::CONFIGURABLE {
+            for botao in dreamyemu::input::bindings::CONFIGURABLE {
                 assert!(
                     !player.sources(botao).is_empty(),
                     "porta {indice}: o botão {botao} saiu sem origem"
@@ -969,7 +969,7 @@ mod testes_de_criacao {
     use super::*;
 
     fn pasta(nome: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zeebx-headless-{nome}"));
+        let dir = std::env::temp_dir().join(format!("dreamyemu-headless-{nome}"));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

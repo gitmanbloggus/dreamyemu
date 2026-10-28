@@ -3379,7 +3379,7 @@ mod tests {
         use std::io::{Read as _, Write as _};
 
         // Um arquivo de verdade, em disco, com conteúdo conhecido.
-        let caminho = std::env::temp_dir().join("zeebx-teste-do-estado.bin");
+        let caminho = std::env::temp_dir().join("dreamyemu-teste-do-estado.bin");
         let mut criado = std::fs::File::create(&caminho).expect("criar o arquivo de teste");
         let duzentos_e_cinquenta_e_seis: Vec<u8> = (0u8..=255).collect();
         criado
@@ -4273,7 +4273,7 @@ mod tests {
         );
 
         // Um banco de verdade, em disco, com uma linha escrita.
-        let caminho = std::env::temp_dir().join("zeebx-teste-do-banco.db");
+        let caminho = std::env::temp_dir().join("dreamyemu-teste-do-banco.db");
         let _ = std::fs::remove_file(&caminho);
         let banco = crate::brew::sql::Database::open(&caminho).expect("abrir o banco");
         banco

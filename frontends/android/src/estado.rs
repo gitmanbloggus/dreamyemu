@@ -8,8 +8,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use zeebx::session::Session;
-use zeebx::video::display::Framebuffer;
+use dreamyemu::session::Session;
+use dreamyemu::video::display::Framebuffer;
 
 pub const SLOTS: usize = 5;
 const MAX_STATE: u64 = 128 * 1024 * 1024;

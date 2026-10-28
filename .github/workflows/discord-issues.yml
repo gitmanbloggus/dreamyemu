@@ -78,7 +78,7 @@ jobs:
             --arg responsaveis "${RESPONSAVEIS:-ninguém}" \
             --arg rotulos "$ROTULOS" \
             '{
-              username: "Zeebx Issues",
+              username: "Dreamyemu Issues",
               allowed_mentions: { parse: [] },
               embeds: [{
                 title: ($titulo | .[0:256]),

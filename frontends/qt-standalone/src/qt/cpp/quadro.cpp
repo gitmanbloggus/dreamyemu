@@ -19,7 +19,7 @@ namespace {
 // zero ia parar na janela. Na NVIDIA, no Wayland, a janela tem canal alfa mesmo pedindo que não
 // tenha (ver `prepara_gl`), e o compositor mostrava por esses pixels o que estava atrás dela — os
 // "bugs em branco". Conferido capturando a janela: o fundo saía `(0,0,0,0)`, e o mesmo quadro pela
-// `zeebx sessao` saía preto. O `swizzle` muda só a leitura da textura: o rasterizador continua
+// `dreamyemu sessao` saía preto. O `swizzle` muda só a leitura da textura: o rasterizador continua
 // desenhando nela como antes. A textura presa ao GL do Qt volta a ser a de antes, porque o Qt
 // guarda o que deixou ligado e não confere.
 void le_alfa_como_um(GLuint textura)

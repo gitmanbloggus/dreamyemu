@@ -20,7 +20,7 @@ use crate::library::CatalogIndex;
 ///
 /// O banco que vem no pacote é a fonte do catálogo oficial; nunca o modificamos. A cópia de
 /// perfil contém uma tabela nossa de rastreamento, para que uma nova varredura remova somente
-/// registros que o Zeebx criou, sem apagar títulos vindos da NAND ou do pacote.
+/// registros que o Dreamyemu criou, sem apagar títulos vindos da NAND ou do pacote.
 pub fn sync_z_wheel_library(
     packaged: &Path,
     profile: &Path,
@@ -34,12 +34,12 @@ pub fn sync_z_wheel_library(
     let mut conn = rusqlite::Connection::open(profile).map_err(|err| err.to_string())?;
     let tx = conn.transaction().map_err(|err| err.to_string())?;
     tx.execute_batch(
-        "CREATE TABLE IF NOT EXISTS ZEEBX_LIBRARY(class_id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS DREAMYEMU_LIBRARY(class_id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL)",
     )
     .map_err(|err| err.to_string())?;
     let old: Vec<(u32, u32)> = {
         let mut stmt = tx
-            .prepare("SELECT class_id, game_id FROM ZEEBX_LIBRARY")
+            .prepare("SELECT class_id, game_id FROM DREAMYEMU_LIBRARY")
             .map_err(|err| err.to_string())?;
         stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|err| err.to_string())?
@@ -55,7 +55,7 @@ pub fn sync_z_wheel_library(
         )
         .map_err(|err| err.to_string())?;
     }
-    tx.execute("DELETE FROM ZEEBX_LIBRARY", [])
+    tx.execute("DELETE FROM DREAMYEMU_LIBRARY", [])
         .map_err(|err| err.to_string())?;
     for entry in &catalog.titles {
         if entry.source != crate::library::CatalogSource::Rom {
@@ -75,7 +75,7 @@ pub fn sync_z_wheel_library(
             ).map_err(|err| err.to_string())?;
         }
         tx.execute(
-            "INSERT INTO ZEEBX_LIBRARY(class_id,game_id) VALUES (?1,?2)",
+            "INSERT INTO DREAMYEMU_LIBRARY(class_id,game_id) VALUES (?1,?2)",
             params![id, id],
         ).map_err(|err| err.to_string())?;
     }
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn a_consulta_de_versao_do_zwheel_responde() {
-        let dir = crate::scratch::TempDir::new("zeebx-sql-versao");
+        let dir = crate::scratch::TempDir::new("dreamyemu-sql-versao");
         let db = prefs(dir.path());
 
         // É a primeira coisa que a Z-Wheel pergunta depois de abrir o banco.
@@ -201,7 +201,7 @@ mod tests {
     fn o_integrity_check_responde_ok() {
         // A instrução que aparece na sonda antes de qualquer outra. Um `PRAGMA` devolve linha
         // como uma consulta qualquer, e é isso que o app confere.
-        let dir = crate::scratch::TempDir::new("zeebx-sql-integridade");
+        let dir = crate::scratch::TempDir::new("dreamyemu-sql-integridade");
         let db = prefs(dir.path());
         let linhas = db.exec("PRAGMA integrity_check").unwrap();
         assert_eq!(linhas.len(), 1);
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn instrucao_sem_resultado_nao_devolve_linha_e_grava() {
-        let dir = crate::scratch::TempDir::new("zeebx-sql-gravacao");
+        let dir = crate::scratch::TempDir::new("dreamyemu-sql-gravacao");
         let db = prefs(dir.path());
         let gravou = db
             .exec("INSERT OR REPLACE INTO PREFSINFO values ('Initialized', '', 1, 2)")
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn instrucao_invalida_vira_erro_com_motivo() {
-        let dir = crate::scratch::TempDir::new("zeebx-sql-erro");
+        let dir = crate::scratch::TempDir::new("dreamyemu-sql-erro");
         let db = prefs(dir.path());
         let erro = db.exec("SELECT * FROM NAO_EXISTE").unwrap_err();
         assert!(
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn biblioteca_do_perfil_preserva_o_oficial_e_atualiza_roms() {
-        let dir = crate::scratch::TempDir::new("zeebx-sql-biblioteca");
+        let dir = crate::scratch::TempDir::new("dreamyemu-sql-biblioteca");
         let package = dir.join("tt_game_info");
         let db = Database::open(&package).unwrap();
         db.exec("CREATE TABLE GAMEINFO(game_id INTEGER PRIMARY KEY, class_id INTEGER, playcount INTEGER, dt_download INTEGER, dt_lastplayed INTEGER, boxart_path TEXT, flags INTEGER, size INTEGER)").unwrap();

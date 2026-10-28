@@ -20,7 +20,7 @@ from capstone import Cs, CS_ARCH_ARM, CS_MODE_ARM
 BASE = 0x10000  # byte zero do arquivo: o carregador mapeia a imagem em MODULE_BASE - MODULE_PREFIX e zera o prefixo
 
 def carrega(padrao='Z-Wheel'):
-    root = pathlib.Path.home()/'.config/zeebx/cache'
+    root = pathlib.Path.home()/'.config/dreamyemu/cache'
     d = [p for p in root.iterdir() if padrao in p.name][0]
     return max((m for m in d.rglob('*.mod')), key=lambda m: m.stat().st_size).read_bytes()
 

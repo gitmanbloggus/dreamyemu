@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use zeebx::input::gamepads::Gamepads;
-use zeebx::input::{self, Pad};
-use zeebx::session::{FATIA_MAXIMA, Session, Step};
-use zeebx::ui::library::{self, Game};
-use zeebx::ui::settings::Settings;
+use dreamyemu::input::gamepads::Gamepads;
+use dreamyemu::input::{self, Pad};
+use dreamyemu::session::{FATIA_MAXIMA, Session, Step};
+use dreamyemu::ui::library::{self, Game};
+use dreamyemu::ui::settings::Settings;
 
 use crate::config::Headless;
 use crate::entrada::{self, Teclado};
@@ -117,7 +117,7 @@ impl Console {
         let tela_anterior = self
             .sessao
             .as_ref()
-            .filter(|anterior| anterior.classe() == zeebx::session::Z_WHEEL)
+            .filter(|anterior| anterior.classe() == dreamyemu::session::Z_WHEEL)
             .map(|anterior| anterior.screen().to_rgb565_bytes());
 
         let portas = std::array::from_fn(|porta| {
@@ -127,8 +127,8 @@ impl Console {
                 .filter(|jogador| jogador.ligada)
                 .map(|jogador| jogador.aparelho)
         });
-        zeebx::audio::soundfont::define_banco(self.settings.audio.soundfont.clone());
-        zeebx::audio::soundfont::define_efeitos(self.settings.audio.midi_effects);
+        dreamyemu::audio::soundfont::define_banco(self.settings.audio.soundfont.clone());
+        dreamyemu::audio::soundfont::define_efeitos(self.settings.audio.midi_effects);
         let g = &self.settings.graphics;
         let mut sessao = Session::start_with(
             caminho,
@@ -144,7 +144,7 @@ impl Console {
         sessao.define_proporcao(g.proporcao.aspecto(16.0 / 9.0));
         sessao.define_melhorias(g.antialias as usize, g.anisotropico as usize);
         sessao.define_neblina(g.neblina);
-        if let Some(tela) = tela_anterior.filter(|_| sessao.classe() != zeebx::session::Z_WHEEL) {
+        if let Some(tela) = tela_anterior.filter(|_| sessao.classe() != dreamyemu::session::Z_WHEEL) {
             sessao.herda_tela(&tela);
         }
         // O que a Z-Wheel enxerga instalado. Sem isto a lista dela vem vazia e não há o que abrir.
@@ -279,7 +279,7 @@ impl Console {
             // tela inicial, e a tela inicial do Zeebo é a Z-Wheel. Sem ela, ou com
             // `sair_com_o_jogo`, o emulador sai junto: é o que um frontend de fora espera, já
             // que a tela dele é que volta a aparecer.
-            let volta = sessao.classe() == zeebx::session::Z_WHEEL || self.pela_z_wheel;
+            let volta = sessao.classe() == dreamyemu::session::Z_WHEEL || self.pela_z_wheel;
             let z_wheel = self.z_wheel.clone();
             if let (false, true, Some(caminho)) = (self.opcoes.sair_com_o_jogo, volta, z_wheel) {
                 self.pela_z_wheel = false;

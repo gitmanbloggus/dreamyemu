@@ -22,17 +22,17 @@ pub fn launch(jogo: Option<&str>) -> ExitCode {
         return ExitCode::FAILURE;
     };
     // Antes da primeira janela. No Wayland não existe ícone em pixels: o compositor casa este
-    // nome com o `zeebx.desktop` instalado e tira o ícone de lá, como o `app_id` do egui.
-    app.as_mut().set_application_name(&QString::from("Zeebx"));
+    // nome com o `dreamyemu.desktop` instalado e tira o ícone de lá, como o `app_id` do egui.
+    app.as_mut().set_application_name(&QString::from("Dreamyemu"));
     QGuiApplication::set_desktop_file_name(&QString::from(crate::APP_ID));
     ponte::qobject::aplica_icone();
     let mut propriedades = cxx_qt_lib::QMap::<cxx_qt_lib::QMapPair_QString_QVariant>::default();
     let jogo = QString::from(jogo.unwrap_or_default());
     propriedades.insert(QString::from("jogoInicial"), QVariant::from(&jogo));
     engine.as_mut().set_initial_properties(&propriedades);
-    // As capas, os logos e as classificações da biblioteca: `image://zeebx/…`.
+    // As capas, os logos e as classificações da biblioteca: `image://dreamyemu/…`.
     biblioteca::registra_imagens(engine.as_mut().upcast_pin());
-    engine.load(&QUrl::from("qrc:/qt/qml/zeebx/qml/Principal.qml"));
+    engine.load(&QUrl::from("qrc:/qt/qml/dreamyemu/qml/Principal.qml"));
     let saida = app.exec();
     // **A ordem é a correção.** Primeiro a engine; depois o jogo, solto com o contexto de GL
     // ainda vivo, porque as texturas dele moram lá; depois o contexto; e só então o

@@ -58,5 +58,6 @@ frontends/switch/saida/
 xcuserdata/
 *.xcuserstate
 
-# Wiki do GitHub: repositório próprio (zeebx-emu.wiki.git), clonado aqui só para edição.
+# Wiki do GitHub: repositório próprio (dreamyemu.wiki.git), clonado aqui só para edição.
 /wiki/
+assets/DREAIMG/DREAIMG-RC29.zip

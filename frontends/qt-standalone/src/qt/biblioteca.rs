@@ -1,7 +1,7 @@
 //! A biblioteca de jogos, como modelo de lista para o QML, e as imagens dela.
 //!
 //! A lista é a do egui: em ordem de título, sem a Z-Wheel, com o nome oficial que ela traz, e
-//! filtrada pela busca. As imagens chegam ao QML por `image://zeebx/…` — ver `cpp/imagens.h`.
+//! filtrada pela busca. As imagens chegam ao QML por `image://dreamyemu/…` — ver `cpp/imagens.h`.
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -31,7 +31,7 @@ pub mod qobject {
     }
 
     // Ver `cpp/imagens.h`.
-    #[namespace = "zeebx"]
+    #[namespace = "dreamyemu"]
     unsafe extern "C++" {
         include!("imagens.h");
         fn registra_imagens(engine: Pin<&mut QQmlEngine>, fonte: fn(&str) -> QImage);
@@ -73,7 +73,7 @@ pub mod qobject {
         fn abre(self: &Biblioteca, linha: i32) -> QString;
 
         /// A chave das coisas do jogo da linha, como as configurações dele. Vazia se a linha não
-        /// existe. Ver `zeebx::library::chave_do_jogo`.
+        /// existe. Ver `dreamyemu::library::chave_do_jogo`.
         #[qinvokable]
         fn chave(self: &Biblioteca, linha: i32) -> QString;
 
@@ -175,11 +175,11 @@ use cxx_qt_lib::{
     QMapPair_QString_QVariant, QModelIndex, QString, QVariant,
 };
 
-use zeebx::loader::archive;
-use zeebx::ponte;
-use zeebx::ui::acervo;
-use zeebx::ui::navegacao::Comando;
-use zeebx::ui::settings::ModoDaBiblioteca;
+use dreamyemu::loader::archive;
+use dreamyemu::ponte;
+use dreamyemu::ui::acervo;
+use dreamyemu::ui::navegacao::Comando;
+use dreamyemu::ui::settings::ModoDaBiblioteca;
 
 use super::nucleo;
 
@@ -260,7 +260,7 @@ fn imagem(endereco: &str) -> QImage {
     })
 }
 
-/// Registra o provedor de imagens no engine: `image://zeebx/…`.
+/// Registra o provedor de imagens no engine: `image://dreamyemu/…`.
 pub fn registra_imagens(engine: Pin<&mut qobject::QQmlEngine>) {
     qobject::registra_imagens(engine, imagem);
 }
@@ -292,7 +292,7 @@ impl qobject::Biblioteca {
                     texto(ficha.and_then(|ficha| ficha.descricao(idioma)).unwrap_or_default())
                 }
                 CLASSE => texto(&classe.map(|c| format!("{c:#010x}")).unwrap_or_default()),
-                CAPA => texto(&format!("image://zeebx/capa/{geracao}/{indice}")),
+                CAPA => texto(&format!("image://dreamyemu/capa/{geracao}/{indice}")),
                 CAPA_NITIDA => {
                     let nitida = nucleo.capa(indice).is_some_and(|imagem| {
                         acervo::amplia_sem_interpolar(imagem, QUADRO_DA_CAPA)
@@ -300,12 +300,12 @@ impl qobject::Biblioteca {
                     QVariant::from(&nitida)
                 }
                 LOGO => match ficha.is_some_and(|ficha| ficha.logo.is_some()) {
-                    true => texto(&format!("image://zeebx/logo/{geracao}/{}", classe.unwrap_or(0))),
+                    true => texto(&format!("image://dreamyemu/logo/{geracao}/{}", classe.unwrap_or(0))),
                     false => texto(""),
                 },
                 CLASSIFICACAO => match ficha.is_some_and(|ficha| ficha.classificacao.is_some()) {
                     true => texto(&format!(
-                        "image://zeebx/classificacao/{geracao}/{}",
+                        "image://dreamyemu/classificacao/{geracao}/{}",
                         classe.unwrap_or(0)
                     )),
                     false => texto(""),
@@ -369,7 +369,7 @@ impl qobject::Biblioteca {
 
     pub fn chave(&self, linha: i32) -> QString {
         let caminho = nucleo::com(|nucleo| caminho_da_linha(nucleo, linha));
-        QString::from(caminho.and_then(|c| zeebx::library::chave_do_jogo(&c)).unwrap_or_default())
+        QString::from(caminho.and_then(|c| dreamyemu::library::chave_do_jogo(&c)).unwrap_or_default())
     }
 
     pub fn detalhes(&self, linha: i32) -> QMap<QMapPair_QString_QVariant> {
@@ -377,14 +377,14 @@ impl qobject::Biblioteca {
         let Some(caminho) = nucleo::com(|nucleo| caminho_da_linha(nucleo, linha)) else {
             return detalhes;
         };
-        let chave = zeebx::library::chave_do_jogo(&caminho).unwrap_or_default();
+        let chave = dreamyemu::library::chave_do_jogo(&caminho).unwrap_or_default();
         let indice = self.index(linha, 0, &QModelIndex::default());
         let texto = |texto: &str| QVariant::from(&QString::from(texto));
         detalhes.insert(QString::from("classe"), self.data(&indice, CLASSE));
         detalhes.insert(QString::from("caminho"), texto(&caminho.display().to_string()));
         detalhes.insert(
             QString::from("modulo"),
-            texto(&zeebx::library::id_do_modulo(&caminho).unwrap_or_default()),
+            texto(&dreamyemu::library::id_do_modulo(&caminho).unwrap_or_default()),
         );
         let bytes = std::fs::metadata(&caminho).map(|m| m.len()).unwrap_or(0);
         let (personalizado, virgula) = nucleo::com(|nucleo| {

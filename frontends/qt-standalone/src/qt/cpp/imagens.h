@@ -10,10 +10,10 @@
 
 #include "rust/cxx.h"
 
-namespace zeebx {
+namespace dreamyemu {
 
-// Registra o provedor como `image://zeebx/…`. `fonte` recebe o endereço sem o esquema e devolve
+// Registra o provedor como `image://dreamyemu/…`. `fonte` recebe o endereço sem o esquema e devolve
 // a imagem, ou uma nula quando não há.
 void registra_imagens(QQmlEngine &engine, rust::Fn<QImage(rust::Str)> fonte);
 
-} // namespace zeebx
+} // namespace dreamyemu

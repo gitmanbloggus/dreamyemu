@@ -1,13 +1,13 @@
 [package]
-name = "zeebx-libretro"
+name = "dreamyemu-libretro"
 version = "0.4.2"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "Core Libretro do emulador Zeebx"
+description = "Dreamyemu Libretro core"
 publish = false
 
 [lib]
-name = "zeebx_libretro"
+name = "dreamyemu_libretro"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -19,7 +19,7 @@ crate-type = ["cdylib"]
 # `ldd` do `libretro.yml` cobra.
 # `soundfont` entra junto: é Rust puro (MIT) e não traz biblioteca de host, então o núcleo pode
 # tocar MIDI com o banco de amostras do aparelho sem quebrar a regra de zero dependências de host.
-zeebx = { path = "../..", default-features = false, features = ["gl", "soundfont"] }
+dreamyemu = { path = "../..", default-features = false, features = ["gl", "soundfont"] }
 # O mesmo `glow` que o motor usa: o contexto que o frontend entrega é montado com ele.
 glow = "0.16"
 

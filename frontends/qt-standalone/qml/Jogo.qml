@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Shapes
 import QtQuick.Window
 
-import zeebx
+import dreamyemu
 
 // A janela do jogo: uma janela do sistema, e não um painel dentro da principal, como no egui.
 // Ela só é mostrada depois de a biblioteca abrir um jogo, e fechá-la fecha o jogo.
@@ -26,7 +26,7 @@ Window {
     minimumHeight: 240
     visible: false
     color: "black"
-    title: "Zeebx — " + tela.estado
+    title: "Dreamyemu — " + tela.estado
 
     // Como na principal: o tamanho em que fechar é o tamanho em que reabrir.
     readonly property real larguraGuardada: tela.larguraDaJanela()
@@ -297,7 +297,7 @@ Window {
                     anchors.centerIn: parent
                     width: 110
                     fillMode: Image.PreserveAspectFit
-                    source: "qrc:/zeebx/boomerang.png"
+                    source: "qrc:/dreamyemu/boomerang.png"
                     rotation: tela.avisoGiro
                     smooth: true
                 }

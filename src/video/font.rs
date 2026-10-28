@@ -128,7 +128,7 @@ mod tests {
 
     fn dirs_cache() -> Option<std::path::PathBuf> {
         let base = std::env::var_os("HOME")?;
-        let raiz = std::path::Path::new(&base).join(".config/zeebx/cache");
+        let raiz = std::path::Path::new(&base).join(".config/dreamyemu/cache");
         std::fs::read_dir(raiz)
             .ok()?
             .filter_map(Result::ok)

@@ -54,15 +54,15 @@ compila() {
   fi
   export SDKROOT="$(xcrun --sdk "$sdk" --show-sdk-path)"
   cd "$RAIZ"
-  "$cargo" build --release --locked -p zeebx-ios --target "$alvo"
-  echo "$RAIZ/target/${alvo}/release/libzeebx_ios.a"
+  "$cargo" build --release --locked -p dreamyemu-ios --target "$alvo"
+  echo "$RAIZ/target/${alvo}/release/libdreamyemu_ios.a"
 }
 
 copia_biblioteca() {
   local alvo="$1"
-  local biblioteca="$RAIZ/target/${alvo}/release/libzeebx_ios.a"
+  local biblioteca="$RAIZ/target/${alvo}/release/libdreamyemu_ios.a"
   if [ -n "${BUILT_PRODUCTS_DIR:-}" ]; then
-    cp "$biblioteca" "${BUILT_PRODUCTS_DIR}/libzeebx_ios.a"
+    cp "$biblioteca" "${BUILT_PRODUCTS_DIR}/libdreamyemu_ios.a"
   fi
 }
 
@@ -78,8 +78,8 @@ xcode() {
     extra+=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="")
   fi
   xcodebuild \
-    -project "$AQUI/app/Zeebx.xcodeproj" \
-    -target Zeebx \
+    -project "$AQUI/app/Dreamyemu.xcodeproj" \
+    -target Dreamyemu \
     -sdk "$sdk" \
     -configuration Release \
     -destination "generic/platform=${destino}" \
@@ -88,18 +88,18 @@ xcode() {
     CONFIGURATION_BUILD_DIR="$AQUI/build/${sdk}" \
     "${extra[@]}"
   echo "== .app =="
-  ls -lh "$AQUI/build/${sdk}/Zeebx.app"
+  ls -lh "$AQUI/build/${sdk}/Dreamyemu.app"
 }
 
 # Dois zips. Cada um leva só o que instala naquele lugar, e o leia-me daquele
 # fluxo. O do simulador não carrega o IPA: quem abre o zip errado instalaria
 # um binário que o AltStore recusa, ou o contrário.
 pacote() {
-  local sim="$AQUI/build/iphonesimulator/Zeebx.app"
-  local aparelho="$AQUI/build/iphoneos/Zeebx.app"
+  local sim="$AQUI/build/iphonesimulator/Dreamyemu.app"
+  local aparelho="$AQUI/build/iphoneos/Dreamyemu.app"
   local dir="${1:-$AQUI/build}"
-  local zip_sim="$dir/zeebx-ios-simulator.zip"
-  local zip_aparelho="$dir/zeebx-ios.zip"
+  local zip_sim="$dir/dreamyemu-ios-simulator.zip"
+  local zip_aparelho="$dir/dreamyemu-ios.zip"
   local stage ipa_stage
   if [ ! -d "$sim" ] || [ ! -d "$aparelho" ]; then
     echo "faltam os dois .app. Rode --app e --app-aparelho antes." >&2
@@ -108,11 +108,11 @@ pacote() {
   mkdir -p "$dir"
   # O formato antigo deixava o IPA solto ao lado do zip. Quem baixa a release
   # via os dois e não sabia qual abria onde.
-  rm -f "$dir/zeebx-ios.ipa"
+  rm -f "$dir/dreamyemu-ios.ipa"
 
   stage="$(mktemp -d)"
   mkdir -p "$stage/simulador"
-  ditto --norsrc "$sim" "$stage/simulador/Zeebx.app"
+  ditto --norsrc "$sim" "$stage/simulador/Dreamyemu.app"
   xattr -cr "$stage/simulador"
   cp "$AQUI/LEIA-ME-simulador.txt" "$stage/LEIA-ME.txt"
   mkdir -p "$stage/licenses"
@@ -127,9 +127,9 @@ pacote() {
   stage="$(mktemp -d)"
   ipa_stage="$(mktemp -d)"
   mkdir -p "$ipa_stage/Payload"
-  ditto --norsrc "$aparelho" "$ipa_stage/Payload/Zeebx.app"
+  ditto --norsrc "$aparelho" "$ipa_stage/Payload/Dreamyemu.app"
   xattr -cr "$ipa_stage"
-  ditto -c -k --norsrc --keepParent "$ipa_stage/Payload" "$stage/zeebx-ios.ipa"
+  ditto -c -k --norsrc --keepParent "$ipa_stage/Payload" "$stage/dreamyemu-ios.ipa"
   rm -rf "$ipa_stage"
   cp "$AQUI/LEIA-ME-altstore.txt" "$stage/LEIA-ME.txt"
   mkdir -p "$stage/licenses"

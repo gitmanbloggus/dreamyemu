@@ -23,7 +23,7 @@
 //! a tabela de timbres, que é o que já toca hoje.
 //!
 //! O caminho de busca é o mesmo da fonte do sistema: a pasta do aparelho que o frontend entregou
-//! primeiro, e depois o perfil do desktop. `ZEEBX_SOUNDFONT` aponta um arquivo direto, para
+//! primeiro, e depois o perfil do desktop. `DREAMYEMU_SOUNDFONT` aponta um arquivo direto, para
 //! experimentar sem instalar nada.
 
 use std::collections::HashMap;
@@ -166,11 +166,11 @@ const TETO: f32 = 0.95;
 
 /// Onde o banco é procurado, em ordem de preferência.
 ///
-/// `ZEEBX_SOUNDFONT` primeiro porque é o caminho de quem está experimentando; depois a pasta do
+/// `DREAMYEMU_SOUNDFONT` primeiro porque é o caminho de quem está experimentando; depois a pasta do
 /// aparelho, que é o que o frontend controla; e por último o perfil do desktop.
 pub fn candidatos(aparelho: &Path) -> Vec<PathBuf> {
     let mut saida = Vec::new();
-    if let Some(caminho) = std::env::var_os("ZEEBX_SOUNDFONT") {
+    if let Some(caminho) = std::env::var_os("DREAMYEMU_SOUNDFONT") {
         saida.push(PathBuf::from(caminho));
     }
     saida.extend(candidatos_em(&pastas_padrao(aparelho)));
@@ -181,7 +181,7 @@ pub fn candidatos(aparelho: &Path) -> Vec<PathBuf> {
 /// perfil do desktop.
 ///
 /// Separada de [`candidatos`] para os testes poderem afirmar sem depender do perfil de quem roda.
-/// **Um `.sf2` no `~/.config/zeebx` — que é onde o LEIAME manda pôr — deixava a bateria vermelha**,
+/// **Um `.sf2` no `~/.config/dreamyemu` — que é onde o LEIAME manda pôr — deixava a bateria vermelha**,
 /// porque duas provas perguntavam "não há banco nenhum" com o disco do desenvolvedor cheio.
 pub fn pastas_padrao(aparelho: &Path) -> Vec<PathBuf> {
     vec![
@@ -190,7 +190,7 @@ pub fn pastas_padrao(aparelho: &Path) -> Vec<PathBuf> {
     ]
 }
 
-/// Os bancos das pastas dadas, em ordem. Sem o perfil e sem o `ZEEBX_SOUNDFONT`.
+/// Os bancos das pastas dadas, em ordem. Sem o perfil e sem o `DREAMYEMU_SOUNDFONT`.
 pub fn candidatos_em(pastas: &[PathBuf]) -> Vec<PathBuf> {
     let mut saida = Vec::new();
     for base in pastas {
@@ -222,18 +222,18 @@ fn bancos_em(base: &Path) -> Vec<PathBuf> {
     bancos
 }
 
-/// O banco a usar: o escolhido, depois o do `ZEEBX_SOUNDFONT`, depois o primeiro `.sf2` das
+/// O banco a usar: o escolhido, depois o do `DREAMYEMU_SOUNDFONT`, depois o primeiro `.sf2` das
 /// pastas de busca.
 ///
 /// **Um banco escolhido que sumiu não emudece a música.** O arquivo pode ter mudado de lugar
 /// desde que foi escolhido; o registro diz qual, e a busca segue como se nada tivesse sido
 /// escolhido. Silêncio aqui seria "o banco não funciona" sem dizer por quê.
 ///
-/// O `ZEEBX_SOUNDFONT` só entrava em [`candidatos`], que ninguém chamava fora das provas: a
+/// O `DREAMYEMU_SOUNDFONT` só entrava em [`candidatos`], que ninguém chamava fora das provas: a
 /// variável que o [`relato`] manda usar era ignorada.
 pub fn primeiro_banco(aparelho: &Path) -> Option<PathBuf> {
-    let variavel = std::env::var_os("ZEEBX_SOUNDFONT").map(PathBuf::from);
-    for (origem, caminho) in [("escolhido", banco_escolhido()), ("do ZEEBX_SOUNDFONT", variavel)] {
+    let variavel = std::env::var_os("DREAMYEMU_SOUNDFONT").map(PathBuf::from);
+    for (origem, caminho) in [("escolhido", banco_escolhido()), ("do DREAMYEMU_SOUNDFONT", variavel)] {
         let Some(caminho) = caminho else {
             continue;
         };
@@ -503,14 +503,14 @@ pub fn relato(aparelho: &Path) -> String {
 fn relato_de(aparelho: &Path, banco: Option<PathBuf>) -> String {
     match banco {
         Some(caminho) => format!(
-            "Zeebx: banco de amostras do MIDI em {}; a trilha toca com as amostras",
+            "Dreamyemu: banco de amostras do MIDI em {}; a trilha toca com as amostras",
             caminho.display()
         ),
         None => {
             let pasta = aparelho.join("soundfonts");
             format!(
-                "Zeebx: sem banco de amostras do MIDI; a trilha toca com a tabela de timbres. \
-                 Para ouvir com amostras, ponha um .sf2 em {} (ou aponte ZEEBX_SOUNDFONT)",
+                "Dreamyemu: sem banco de amostras do MIDI; a trilha toca com a tabela de timbres. \
+                 Para ouvir com amostras, ponha um .sf2 em {} (ou aponte DREAMYEMU_SOUNDFONT)",
                 pasta.display()
             )
         }
@@ -557,9 +557,9 @@ mod tests {
     /// O banco de teste, do harness de comparação que vive fora do repositório.
     fn banco_de_teste() -> Option<PathBuf> {
         let candidatos = [
-            std::env::var_os("ZEEBX_SOUNDFONT").map(PathBuf::from),
+            std::env::var_os("DREAMYEMU_SOUNDFONT").map(PathBuf::from),
             Some(PathBuf::from(
-                "/home/rafaelfrequiao/zeebx-midi-harness/zbfont/GeneralUser-GS.sf2",
+                "/home/rafaelfrequiao/dreamyemu-midi-harness/zbfont/GeneralUser-GS.sf2",
             )),
         ];
         candidatos.into_iter().flatten().find(|c| c.is_file())
@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn o_banco_toca_a_partitura() {
         let Some(caminho) = banco_de_teste() else {
-            eprintln!("sem banco .sf2 no disco: teste dispensado (use ZEEBX_SOUNDFONT)");
+            eprintln!("sem banco .sf2 no disco: teste dispensado (use DREAMYEMU_SOUNDFONT)");
             return;
         };
         let banco = abre(&caminho).expect("o banco abre");
@@ -786,7 +786,7 @@ mod tests {
     /// hipótese. O motor tem de seguir com a tabela de timbres e não dizer nada de errado.
     #[test]
     fn um_banco_estragado_nao_derruba_nada() {
-        let pasta = std::env::temp_dir().join("zeebx-banco-estragado.sf2");
+        let pasta = std::env::temp_dir().join("dreamyemu-banco-estragado.sf2");
         // Cabeçalho de RIFF válido e o resto lixo: passa a checagem mais óbvia e falha na leitura
         // das listas, que é onde um arquivo truncado de verdade falha.
         let mut lixo = b"RIFF".to_vec();
@@ -819,7 +819,7 @@ mod tests {
     /// byte além da alocação — e `abre` devolve `Some` em vez de `None`.
     #[test]
     fn banco_com_smpl_impar_e_recusado() {
-        let pasta = std::env::temp_dir().join("zeebx-banco-smpl-impar.sf2");
+        let pasta = std::env::temp_dir().join("dreamyemu-banco-smpl-impar.sf2");
         let (taxa, quadros) = (22_050u32, 64usize);
         let mut cru = amostras_do_banco_minimo(taxa, quadros);
         // O byte a mais: com ele o `smpl` declara um tamanho ímpar, e o `Vec<i16>` do `rustysynth`
@@ -838,12 +838,12 @@ mod tests {
     /// **Um caminho que não existe também é recusado em silêncio**, e sem gastar a carga.
     #[test]
     fn banco_ausente_nao_e_erro() {
-        let caminho = std::env::temp_dir().join("zeebx-banco-que-nao-existe.sf2");
+        let caminho = std::env::temp_dir().join("dreamyemu-banco-que-nao-existe.sf2");
         let _ = std::fs::remove_file(&caminho);
         assert!(abre(&caminho).is_none());
-        // Pelas pastas dadas, e não pelo perfil: com um banco em `~/.config/zeebx` esta afirmação
+        // Pelas pastas dadas, e não pelo perfil: com um banco em `~/.config/dreamyemu` esta afirmação
         // caía — e é para lá que o LEIAME manda copiar o `.sf2`.
-        assert!(primeiro_banco_em(&[std::env::temp_dir().join("zeebx-sem-pasta")]).is_none());
+        assert!(primeiro_banco_em(&[std::env::temp_dir().join("dreamyemu-sem-pasta")]).is_none());
     }
 
 
@@ -854,7 +854,7 @@ mod tests {
     #[cfg(feature = "soundfont")]
     #[test]
     fn o_relato_diz_onde_por_o_banco() {
-        let aparelho = std::env::temp_dir().join("zeebx-aparelho-sem-banco");
+        let aparelho = std::env::temp_dir().join("dreamyemu-aparelho-sem-banco");
         let _ = std::fs::remove_dir_all(&aparelho);
         let texto = relato_de(&aparelho, None);
         assert!(
@@ -873,7 +873,7 @@ mod tests {
     /// CI não há. Este não se dispensa: monta o banco mínimo, carrega e toca.
     #[test]
     fn o_caminho_do_banco_toca_um_banco_minimo() {
-        let pasta = std::env::temp_dir().join("zeebx-banco-minimo.sf2");
+        let pasta = std::env::temp_dir().join("dreamyemu-banco-minimo.sf2");
         std::fs::write(&pasta, banco_minimo()).expect("escreve o banco");
         let banco = abre(&pasta).expect("o banco mínimo abre");
         assert!(banco.presets() >= 1, "o banco tem de declarar o preset");
@@ -902,7 +902,7 @@ mod tests {
     #[test]
     fn o_banco_distingue_o_arco_da_palheta() {
         let Some(caminho) = banco_de_teste() else {
-            eprintln!("sem banco .sf2 no disco: teste dispensado (use ZEEBX_SOUNDFONT)");
+            eprintln!("sem banco .sf2 no disco: teste dispensado (use DREAMYEMU_SOUNDFONT)");
             return;
         };
         let banco = abre(&caminho).expect("o banco abre");
@@ -939,7 +939,7 @@ mod tests {
     /// [`primeiro_banco`], que é quem o lê — elas usam [`primeiro_banco_em`].
     #[test]
     fn o_banco_escolhido_ganha_da_busca_e_um_que_sumiu_nao_emudece() {
-        let pasta = std::env::temp_dir().join("zeebx-banco-escolhido");
+        let pasta = std::env::temp_dir().join("dreamyemu-banco-escolhido");
         std::fs::create_dir_all(&pasta).unwrap();
         let escolhido = pasta.join("firmware.sf2");
         std::fs::write(&escolhido, b"RIFF").unwrap();

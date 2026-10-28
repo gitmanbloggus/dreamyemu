@@ -12,8 +12,8 @@ use std::collections::HashSet;
 
 use winit::keyboard::{KeyCode, PhysicalKey};
 
-use zeebx::input::bindings::{Player, Source};
-use zeebx::input::{Pad, gamepads::Gamepads};
+use dreamyemu::input::bindings::{Player, Source};
+use dreamyemu::input::{Pad, gamepads::Gamepads};
 
 /// O teclado do host: que teclas estão apertadas agora.
 #[derive(Default)]

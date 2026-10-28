@@ -5,11 +5,11 @@ plugins {
 // Não há fonte Java nem Kotlin neste módulo: o aplicativo inteiro é o `.so` que o
 // `compilar.sh` deixa em `src/main/jniLibs`. O Gradle aqui só empacota, assina e alinha.
 android {
-    namespace = "io.github.zeebxteam.zeebx"
+    namespace = "io.github.dreamyemuteam.dreamyemu"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "io.github.zeebxteam.zeebx"
+        applicationId = "io.github.dreamyemuteam.dreamyemu"
         // O AAudio, que é a saída de som do `cpal` no Android, chega no 26.
         minSdk = 26
         targetSdk = 35

@@ -1,7 +1,7 @@
 //! Pontes por módulo: o pouco de conhecimento específico de um jogo que o emulador precisa,
 //! isolado aqui e em lugar nenhum mais.
 //!
-//! **Isto não é emulação.** Todo o resto do Zeebx implementa API do BREW ou lê vtable do
+//! **Isto não é emulação.** Todo o resto do Dreamyemu implementa API do BREW ou lê vtable do
 //! console — coisas que valem para qualquer título. O que está neste arquivo vale para **um**
 //! jogo, e por isso mora separado, é opcional, e tem o nome do que é.
 //!

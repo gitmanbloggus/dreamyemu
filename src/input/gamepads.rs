@@ -540,7 +540,7 @@ mod tests {
         if unsafe { libc::geteuid() } == 0 {
             return;
         }
-        let pasta = std::env::temp_dir().join(format!("zeebx-aparelhos-{}", std::process::id()));
+        let pasta = std::env::temp_dir().join(format!("dreamyemu-aparelhos-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&pasta);
         std::fs::create_dir_all(&pasta).unwrap();
         let no = pasta.join("event18");

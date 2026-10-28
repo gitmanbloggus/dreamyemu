@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-import zeebx
+import dreamyemu
 
 // O gerenciador de saves: uma janela do sistema, como no egui. Duas listas, e a separação é a do
 // console: o que o jogo escreveu na pasta dele, e o que está no sistema de arquivos do aparelho —
@@ -26,7 +26,7 @@ ApplicationWindow {
     height: 420
     minimumWidth: 380
     minimumHeight: 260
-    title: "Zeebx — " + tr("saves.title")
+    title: "Dreamyemu — " + tr("saves.title")
 
     function tr(chave) {
         return depende([Idioma.versao], Idioma.texto(chave))

@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-import zeebx
+import dreamyemu
 
 // A janela de log da execução. Separada da do jogo de propósito, como no egui: quem está lendo
 // log quer as duas coisas ao mesmo tempo, e um painel dentro da janela do jogo roubaria espaço do
@@ -39,7 +39,7 @@ ApplicationWindow {
     // volta a outra janela em resposta a uma ação do usuário: pedir de volta para o jogo não
     // adiantava, e o teclado ficava no log. O mouse continua valendo — rolar, exportar, fechar.
     flags: Qt.Window | Qt.WindowDoesNotAcceptFocus
-    title: "Zeebx — " + tr("debug.log.title")
+    title: "Dreamyemu — " + tr("debug.log.title")
 
     function tr(chave) {
         return depende([Idioma.versao], Idioma.texto(chave))

@@ -21,7 +21,7 @@ import json
 import pathlib
 import sys
 
-REPOSITORIO = "ZeebxTeam/zeebx-emu"
+REPOSITORIO = "Dreamyemu/dreamyemu"
 
 # O nome do pacote na release (o passo "Nomear" do CI) → a chave que o `cargo-packager-updater`
 # procura (`<sistema>-<arquitetura>`) e o formato. O `macos-arm64` do CI é o `aarch64` dele.
@@ -36,7 +36,7 @@ PACOTES = [
 def manifesto(pasta: pathlib.Path, frontend: str, tag: str) -> dict | None:
     plataformas = {}
     for sufixo, chave, formato in PACOTES:
-        nome = f"zeebx-standalone-{frontend}-{sufixo}"
+        nome = f"dreamyemu-standalone-{frontend}-{sufixo}"
         assinatura = pasta / f"{nome}.sig"
         if not (pasta / nome).is_file() or not assinatura.is_file():
             print(f"{frontend}: sem {nome} assinado, {chave} fica só com o aviso")

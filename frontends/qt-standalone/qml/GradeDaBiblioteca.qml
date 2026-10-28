@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-import zeebx
+import dreamyemu
 
 // A biblioteca em grade: cartões em pé, na proporção das caixas que a Z-Wheel traz, quantos
 // couberem na largura. É a grade que a interface do egui tinha (`src/ui/app/vitrine.rs`, até a

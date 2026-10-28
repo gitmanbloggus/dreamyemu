@@ -41,20 +41,20 @@ jobs:
           test -n "$dispositivo"
           xcrun simctl boot "$dispositivo" || true
           xcrun simctl bootstatus "$dispositivo" -b
-          xcrun simctl install "$dispositivo" frontends/ios/build/iphonesimulator/Zeebx.app
-          xcrun simctl launch "$dispositivo" io.github.zeebxteam.zeebx
+          xcrun simctl install "$dispositivo" frontends/ios/build/iphonesimulator/Dreamyemu.app
+          xcrun simctl launch "$dispositivo" io.github.dreamyemuteam.dreamyemu
 
       - name: Empacota
         run: frontends/ios/compilar.sh --pacote
 
       - uses: actions/upload-artifact@v4
         with:
-          name: zeebx-ios-simulator
-          path: frontends/ios/build/zeebx-ios-simulator.zip
+          name: dreamyemu-ios-simulator
+          path: frontends/ios/build/dreamyemu-ios-simulator.zip
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
-          name: zeebx-ios
-          path: frontends/ios/build/zeebx-ios.zip
+          name: dreamyemu-ios
+          path: frontends/ios/build/dreamyemu-ios.zip
           if-no-files-found: error

@@ -1,8 +1,8 @@
 import SwiftUI
 
 @main
-struct ZeebxApp: App {
-    @StateObject private var modelo = ZeebxModelo()
+struct DreamyemuApp: App {
+    @StateObject private var modelo = DreamyemuModelo()
 
     var body: some Scene {
         WindowGroup {

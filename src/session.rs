@@ -1264,7 +1264,7 @@ impl Session {
 
     /// Liga o censo do acessador por classe de widget: o que cada classe recebe, por seletor.
     ///
-    /// É o mesmo que a varredura liga por `ZEEBX_ROM_SELETORES`, e o core não tinha como pedir —
+    /// É o mesmo que a varredura liga por `DREAMYEMU_ROM_SELETORES`, e o core não tinha como pedir —
     /// `Machine` é privado do motor. Serve para responder, **no aparelho**, o que a família de
     /// widgets não distingue: o que cada classe proprietária espera.
     pub fn liga_censo_de_widgets(&mut self) {
@@ -1275,7 +1275,7 @@ impl Session {
     ///
     /// Classes criadas, bancos abertos, SQL, propriedades de widget e a árvore de widgets da
     /// primeira tecla saem por aqui, sem se misturar com o log do jogo. A varredura e o `run` têm
-    /// isso por `ZEEBX_ROM_SERIAL` e `--serial` desde sempre; o core não tinha, e é a diferença
+    /// isso por `DREAMYEMU_ROM_SERIAL` e `--serial` desde sempre; o core não tinha, e é a diferença
     /// entre poder olhar o que o applet faz **no aparelho** e só poder supor.
     pub fn liga_serial(&mut self, caminho: &std::path::Path) -> std::io::Result<()> {
         self.machine.liga_serial(caminho)
@@ -2030,7 +2030,7 @@ pub(crate) mod tests {
         let machine = Machine::new(
             cpu,
             modulo,
-            std::env::temp_dir().join("zeebx-session-state-clock"),
+            std::env::temp_dir().join("dreamyemu-session-state-clock"),
         );
         let agora = Instant::now();
         let clock_ms = u64::from(machine.clock_ms());
@@ -2256,11 +2256,11 @@ fn o_motor_desenha_no_framebuffer_do_frontend() {
     use glow::HasContext;
     use std::time::Duration;
 
-    let Ok(rom) = std::env::var("ZEEBX_TESTE_ROM") else {
-        eprintln!("sem ZEEBX_TESTE_ROM: nada a comparar");
+    let Ok(rom) = std::env::var("DREAMYEMU_TESTE_ROM") else {
+        eprintln!("sem DREAMYEMU_TESTE_ROM: nada a comparar");
         return;
     };
-    let ms: u64 = std::env::var("ZEEBX_TESTE_MS")
+    let ms: u64 = std::env::var("DREAMYEMU_TESTE_MS")
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(3000);
@@ -2406,11 +2406,11 @@ fn o_estado_da_placa_continua_o_mesmo_desenho() {
     use glow::HasContext;
     use std::time::Duration;
 
-    let Ok(rom) = std::env::var("ZEEBX_TESTE_ROM") else {
-        eprintln!("sem ZEEBX_TESTE_ROM: nada a comparar");
+    let Ok(rom) = std::env::var("DREAMYEMU_TESTE_ROM") else {
+        eprintln!("sem DREAMYEMU_TESTE_ROM: nada a comparar");
         return;
     };
-    let ms: u64 = std::env::var("ZEEBX_TESTE_MS")
+    let ms: u64 = std::env::var("DREAMYEMU_TESTE_MS")
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(2000);
@@ -2527,19 +2527,19 @@ fn o_estado_da_placa_continua_o_mesmo_desenho() {
 /// isto, ligar o render em hardware seria trocar um caminho medido por um caminho que ninguém
 /// olhou — e é por isso que o `SET_HW_RENDER` fica por fazer no core até esta conta existir.
 ///
-/// **Sem `ZEEBX_TESTE_ROM` não roda**, e **sem placa também não**: num terminal sem EGL o caminho
+/// **Sem `DREAMYEMU_TESTE_ROM` não roda**, e **sem placa também não**: num terminal sem EGL o caminho
 /// fora de tela responde que não existe, e isso é o caso normal, não uma falha do teste.
 #[cfg(feature = "gpu")]
 #[test]
 fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
     use std::time::Duration;
 
-    let Ok(rom) = std::env::var("ZEEBX_TESTE_ROM") else {
-        eprintln!("sem ZEEBX_TESTE_ROM: nada a comparar");
+    let Ok(rom) = std::env::var("DREAMYEMU_TESTE_ROM") else {
+        eprintln!("sem DREAMYEMU_TESTE_ROM: nada a comparar");
         return;
     };
     let origem = std::path::PathBuf::from(&rom);
-    let ms: u64 = std::env::var("ZEEBX_TESTE_MS")
+    let ms: u64 = std::env::var("DREAMYEMU_TESTE_MS")
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(3000);
@@ -2671,7 +2671,7 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
     #[test]
     fn um_arquivo_que_nao_existe_diz_que_nao_deu_para_ler() {
         let err = Session::start_inner(
-            &std::env::temp_dir().join("zeebx-nao-existe.mod"),
+            &std::env::temp_dir().join("dreamyemu-nao-existe.mod"),
             None,
             None,
             false,
@@ -2687,7 +2687,7 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
         // O que importa não é em qual etapa o lixo é barrado — o cabeçalho do `.mod` é frouxo,
         // e quem recusa acaba sendo o carregador —, e sim que a recusa venha com um motivo
         // legível, porque é ele que a interface mostra.
-        let path = std::env::temp_dir().join("zeebx-teste-lixo.mod");
+        let path = std::env::temp_dir().join("dreamyemu-teste-lixo.mod");
         std::fs::write(&path, b"isto nao e um modulo").unwrap();
         let Err(err) = Session::start_inner(&path, None, None, false, None, Default::default(), &[])
         else {

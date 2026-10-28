@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reescreve a lista "Quem faz o Zeebx" do README com os contribuidores do GitHub.
+"""Reescreve a lista "Quem faz o Dreamyemu" do README com os contribuidores do GitHub.
 
 É a mesma lista do site (`docs/site.js`, `buscarContribuidores`): a aba "Contributors" do
 repositório, sem os robôs. O site a busca a cada visita; o README não roda nada, então a lista
@@ -13,7 +13,7 @@ import json
 import pathlib
 import urllib.request
 
-REPOSITORIO = "ZeebxTeam/zeebx-emu"
+REPOSITORIO = "Dreamyemu/dreamyemu"
 README = pathlib.Path(__file__).resolve().parent.parent / "README.md"
 INICIO, FIM = "<!-- contribuidores -->", "<!-- /contribuidores -->"
 POR_LINHA = 6
@@ -22,7 +22,7 @@ POR_LINHA = 6
 def contribuidores() -> list[dict]:
     pedido = urllib.request.Request(
         f"https://api.github.com/repos/{REPOSITORIO}/contributors?per_page=100",
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "zeebx-readme"},
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "dreamyemu-readme"},
     )
     with urllib.request.urlopen(pedido, timeout=30) as resposta:
         return [c for c in json.load(resposta) if c["type"] == "User"]

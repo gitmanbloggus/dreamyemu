@@ -311,6 +311,17 @@ impl std::error::Error for CpuError {}
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub mod dynarmic;
 
+/// Hybrid user/kernel backend for the Dream bring-up (see [`dual`]):
+/// Dynarmic runs user-mode slices at JIT speed; the interpretador keeps
+/// privileged code with full banking/SPSR fidelity. Needs both backends,
+/// so it lives under the same gate as `dynarmic`, plus the `interpretador`
+/// feature the Dream frontends opt into (tests always have it).
+#[cfg(all(
+    not(any(target_arch = "wasm32", target_os = "ios")),
+    any(test, feature = "interpretador")
+))]
+pub mod dual;
+
 /// A32/T32 interpreter. Steps in where the JIT cannot emit code the process can execute: on
 /// `wasm32` the browser does not jump into the block, and on iOS the kernel refuses the
 /// executable page. Also used by this file's own tests. The desktop stays on the JIT.

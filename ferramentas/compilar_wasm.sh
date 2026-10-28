@@ -75,7 +75,7 @@ status=0
 cargo rustc -Z build-std=std,panic_abort --release \
   --config "patch.crates-io.sevenz-rust2.path=\"$vendor\"" \
   --target wasm32-unknown-emscripten \
-  -p zeebx-libretro \
+  -p dreamyemu-libretro \
   --crate-type staticlib || status=$?
 cp "$trava" "$raiz/Cargo.lock"
 rm -f "$trava"
@@ -83,12 +83,12 @@ rm -f "$trava"
 
 pacote="$raiz/target/wasm"
 mkdir -p "$pacote"
-cp "${CARGO_TARGET_DIR:-$raiz/target}/wasm32-unknown-emscripten/release/libzeebx_libretro.a" \
-  "$pacote/zeebx_libretro_emscripten.a"
-cp "$raiz/frontends/libretro/zeebx_libretro.info" "$pacote/"
+cp "${CARGO_TARGET_DIR:-$raiz/target}/wasm32-unknown-emscripten/release/libdreamyemu_libretro.a" \
+  "$pacote/dreamyemu_libretro_emscripten.a"
+cp "$raiz/frontends/libretro/dreamyemu_libretro.info" "$pacote/"
 
 # O `.a` não carrega no navegador. O Retroarch Web faz `dlopen` de um side module.
 emcc -sSIDE_MODULE=1 -O2 \
-  -o "$pacote/zeebx_libretro_emscripten.wasm" \
-  -Wl,--whole-archive "$pacote/zeebx_libretro_emscripten.a" -Wl,--no-whole-archive
-echo "$pacote/zeebx_libretro_emscripten.wasm"
+  -o "$pacote/dreamyemu_libretro_emscripten.wasm" \
+  -Wl,--whole-archive "$pacote/dreamyemu_libretro_emscripten.a" -Wl,--no-whole-archive
+echo "$pacote/dreamyemu_libretro_emscripten.wasm"

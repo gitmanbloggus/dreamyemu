@@ -1001,6 +1001,2581 @@ mod tests {
         }
     }
 
+    // TEMP (v10 restore): linear-time hunt for the real RuntimeInit
+    // args String[] in snap582. The poisoned frame slot [0x4104af38]
+    // (v10, frame 0x4104af10) must be restored to a live array whose
+    // [+8] length >= 1. Single pass per needle over all regions
+    // (the 581-era hunts are O(n^2) and never finish here).
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_caca_v10() {
+        let caminho = "/tmp/opencode/snap582.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        eprintln!("mm_atual={:#x} fatia={}", foto.mm_atual, foto.fatia);
+        // Dono do frame fatal + valor atual do slot v10.
+        for r in &foto.regioes {
+            if r.base <= 0x4104af38 && 0x4104af38 + 4 <= r.base + r.dados.len() as u32 {
+                let o = (0x4104af38 - r.base) as usize;
+                let slot = u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]);
+                eprintln!(
+                    "V10SLOT regiao={:#x} dono={:?} slot=[0x4104af38]={:#x} frame_f10..f70={:02x?}",
+                    r.base, r.dono_mm, slot,
+                    &r.dados[0xf10..0xf70.min(r.dados.len())],
+                );
+            }
+            // Fonte do over-read: o slot de metodo odex +0x10.
+            if r.base <= 0x41aa8ba0 && 0x41aa8ba0 + 0x40 <= r.base + r.dados.len() as u32 {
+                let o = (0x41aa8ba0 - r.base) as usize;
+                eprintln!(
+                    "ODEXSRC regiao={:#x} dono={:?} nome={} +0x00..0x40={:02x?}",
+                    r.base, r.dono_mm, r.nome, &r.dados[o..o+0x40],
+                );
+            }
+        }
+        // Agulhas ASCII numa passada por regiao (args do zygote).
+        for pat in [
+            b"com.android.server.SystemServer".as_slice(),
+            b"start-system-server".as_slice(),
+            b"--zygote".as_slice(),
+            b"--runtime-init".as_slice(),
+        ] {
+            let mut hits = 0;
+            for r in &foto.regioes {
+                let mut off = 0usize;
+                while let Some(pos) = r.dados.get(off..)
+                    .and_then(|s| s.windows(pat.len()).position(|w| w == pat))
+                {
+                    let at = off + pos;
+                    let va = r.base + at as u32;
+                    let lo = at.saturating_sub(16);
+                    let hi = (at + pat.len() + 16).min(r.dados.len());
+                    eprintln!(
+                        "ARGSTR {:?} va={:#x} dono={:?} ctx={:02x?}",
+                        String::from_utf8_lossy(pat), va, r.dono_mm, &r.dados[lo..hi],
+                    );
+                    hits += 1;
+                    if hits >= 6 {
+                        break;
+                    }
+                    off = at + pat.len();
+                }
+                if hits >= 6 {
+                    break;
+                }
+            }
+            if hits == 0 {
+                eprintln!("ARGSTR {:?}: nada", String::from_utf8_lossy(pat));
+            }
+        }
+        // Candidatos a String[] no mm do filho (0x162D4000): o array
+        // real de args existe no heap herdado do zygote; o padrao
+        // [heap-ptr][?][len 1..64][heap-ptr] so vale se elem0
+        // persegue ate chars ASCII (rejeita "?" sem gastar o cap).
+        // Uma passada; cap 30 sucessos. Remove with CRASHOBJ.
+        let busca_mm = |va: u32, len: u32, dono: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(dono)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        let soletra = |elem: u32, dono: u32| -> Option<String> {
+            let so = busca_mm(elem, 20, dono)?;
+            let ap = u32::from_le_bytes([so[16], so[17], so[18], so[19]]);
+            if !(0x4000_0000..0x4200_0000).contains(&ap) {
+                return None;
+            }
+            let ca = busca_mm(ap + 12, 64, dono)?;
+            let mut t = String::new();
+            let mut k = 0usize;
+            while k + 1 < ca.len() && t.len() < 48 {
+                let ch = u16::from_le_bytes([ca[k], ca[k+1]]);
+                if ch == 0 || ch > 0x7e {
+                    break;
+                }
+                t.push(ch as u8 as char);
+                k += 2;
+            }
+            if t.is_empty() { None } else { Some(t) }
+        };
+        for dono_mm in [372064256u32, 371425280u32] {
+        let mut ach = 0;
+        let mut vistos = 0u32;
+        'fora: for r in &foto.regioes {
+            if r.dono_mm != Some(dono_mm) || r.dados.len() < 16 {
+                continue;
+            }
+            let n = r.dados.len() / 4;
+            let mut i = 0usize;
+            while i + 4 < n {
+                let w0 = u32::from_le_bytes([r.dados[i*4], r.dados[i*4+1], r.dados[i*4+2], r.dados[i*4+3]]);
+                let w2 = u32::from_le_bytes([r.dados[i*4+8], r.dados[i*4+9], r.dados[i*4+10], r.dados[i*4+11]]);
+                let w3 = u32::from_le_bytes([r.dados[i*4+12], r.dados[i*4+13], r.dados[i*4+14], r.dados[i*4+15]]);
+                if (0x4000_0000..0x4200_0000).contains(&w0)
+                    && (1..=64).contains(&w2)
+                    && (0x4000_0000..0x4200_0000).contains(&w3)
+                {
+                    vistos += 1;
+                    let cand = r.base + (i*4) as u32;
+                    let len_ok = match busca_mm(cand + 8, 4, dono_mm) {
+                        Some(b) => u32::from_le_bytes([b[0], b[1], b[2], b[3]]) == w2,
+                        None => false,
+                    };
+                    if !len_ok {
+                        i += 1;
+                        continue;
+                    }
+                    if let Some(nm0) = soletra(w3, dono_mm) {
+                        let mut todos = vec![nm0];
+                        let mut ok = true;
+                        for j in 1..w2.min(8) {
+                            let eo = cand + 12 + j * 4;
+                            let eb = match busca_mm(eo, 4, dono_mm) {
+                                Some(b) => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+                                None => { ok = false; break; }
+                            };
+                            match soletra(eb, dono_mm) {
+                                Some(s) => todos.push(s),
+                                None => { ok = false; break; }
+                            }
+                        }
+                        if ok {
+                            eprintln!("STRARR dono={dono_mm:#x} va={cand:#x} len={w2} elems={todos:?}");
+                            ach += 1;
+                            if ach >= 30 {
+                                break 'fora;
+                            }
+                        }
+                    }
+                }
+                i += 1;
+            }
+        }
+        eprintln!("STRARR dono={dono_mm:#x}: {ach} arrays, {vistos} padroes brutos");
+        }
+    }
+
+    // TEMP (char arrays): para 3 Strings reais, despeja o vetor
+    // em +8 (length + UTF-16) e decide count (A+4=1 sempre? E+20?).
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_charvec() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(372064256)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for (so, ap) in [(0x401a0210u32, 0x401a0230u32), (0x401a0320u32, 0x401a0340u32), (0x401a03a8u32, 0x40151aa0u32)] {
+            match busca(ap, 48) {
+                Some(b) => {
+                    let len = u32::from_le_bytes([b[8], b[9], b[10], b[11]]);
+                    let mut t = String::new();
+                    let mut k = 12usize;
+                    while k + 1 < b.len() && t.len() < 24 {
+                        let ch = u16::from_le_bytes([b[k], b[k+1]]);
+                        if ch == 0 || ch > 0x7e {
+                            break;
+                        }
+                        t.push(ch as u8 as char);
+                        k += 2;
+                    }
+                    eprintln!("CHARVEC str={so:#x} arr={ap:#x} arrlen={len} head={:02x?} \"{t}\"", &b[..24]);
+                }
+                None => eprintln!("CHARVEC str={so:#x}: arr ilegivel"),
+            }
+        }
+    }
+    // para calibrar count/offset/hash (o count exato endireita o
+    // viveiro). Remove with CRASHOBJ.
+    #[test]
+    // TEMP (task mm): le task->mm (+0x1B0, calibrado no
+    // caminho_arquivo) dos mortos no snap586 para identificar o
+    // processo (init? zygote? filho?). Remove with CRASHOBJ.
+    #[test]
+    fn temp_task_mm() {
+        let caminho = "/tmp/opencode/snap586.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let le = |va: u32| -> Option<u32> {
+            for r in &foto.regioes {
+                if r.base <= va && va + 4 <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]));
+                }
+            }
+            None
+        };
+        for t in [0xc626e800u32, 0xc6201000, 0xc6231c00, 0xc62ff000, 0xc62ff400] {
+            let mm = le(t + 0x1B0);
+            let mm2 = le(t + 0x1AC);
+            let mm3 = le(t + 0x1B4);
+            eprintln!("TASKMM task={t:#x} mm1b0={mm:?} mm1ac={mm2:?} mm1b4={mm3:?}");
+        }
+        eprintln!("mms conhecidos: pai=0x16238000 filho=0x162d4000 init=?");
+    }
+    // com +12 == task) de system_server (c626e800) + outras tasks,
+    // despeja pilha do kernel (pt_regs/user pc no topo, frames p/
+    // wchan) e estado/comm. Remove with CRASHOBJ.
+    #[test]
+    // TEMP (exiter stack): no snap587 (topo de 583005, c6201000
+    // VIVO — morre DURANTE 583005), acha sua thread_info e despeja
+    // a pilha (o que fazia ao sair: syscall? Java? qual?). Remove
+    // with CRASHOBJ.
+    #[test]
+    fn temp_pilha_exiter() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca_qq = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.base <= va && va + len <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for task in [0xc6201000u32] {
+            let mut tis = Vec::new();
+            let mut vistos = std::collections::HashSet::new();
+            for r in &foto.regioes {
+                if !(0xC000_0000..0xD000_0000).contains(&r.base) {
+                    continue;
+                }
+                let mut b = r.base & !0x1FFF;
+                for _ in 0..3 {
+                    if b >= 0xC000_0000 && vistos.insert(b) {
+                        if let Some(tb) = busca_qq(b + 12, 4) {
+                            if u32::from_le_bytes([tb[0], tb[1], tb[2], tb[3]]) == task {
+                                tis.push(b);
+                            }
+                        }
+                    }
+                    b = b.wrapping_add(0x2000);
+                    if b < r.base {
+                        break;
+                    }
+                }
+            }
+            eprintln!("EXITER task={task:#x} tis={tis:#x?}");
+            for ti in tis.iter().take(1) {
+                let st = busca_qq(task, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                eprintln!("  state={st:?}");
+                let mut usr = Vec::new();
+                let mut kern = Vec::new();
+                for k in 0..0x200u32 {
+                    let va = ti + 0x2000 - 0x800 + k * 4;
+                    if let Some(w) = busca_qq(va, 4) {
+                        let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                        if (0x4000_0000..0x4200_0000).contains(&v)
+                            || (0xAD00_0000..0xAE00_0000).contains(&v)
+                            || (0xAF00_0000..0xB000_0000).contains(&v)
+                            || (0xBE00_0000..0xC000_0000).contains(&v)
+                            || (0x0000_8000..0x0020_0000).contains(&v)
+                        {
+                            usr.push(format!("{va:#x}={v:#x}"));
+                        } else if (0xC000_0000..0xC800_0000).contains(&v) && v & 3 == 0 {
+                            kern.push(format!("{va:#x}={v:#x}"));
+                        }
+                    }
+                }
+                eprintln!("  usr=[{}]", usr.join(" "));
+                eprintln!("  kern=[{}]", kern.join(" "));
+            }
+        }
+    }
+    fn temp_pilha_travada() {
+        let caminho = "/tmp/opencode/snap586.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        eprintln!("mm_atual={:#x} fatia={} pc={:#x}", foto.mm_atual, foto.fatia, foto.pc);
+        let busca_qq = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.base <= va && va + len <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for task in [0xc626e800u32, 0xc6201000, 0xc6231c00] {
+            // thread_info: bases 8K sobrepostas a qq regiao kernel,
+            // com task em +12 (leitura por palavra: regioes sao 4K).
+            let mut tis = Vec::new();
+            let mut vistos = std::collections::HashSet::new();
+            for r in &foto.regioes {
+                if !(0xC000_0000..0xD000_0000).contains(&r.base) {
+                    continue;
+                }
+                let mut b = r.base & !0x1FFF;
+                for _ in 0..3 {
+                    if b >= 0xC000_0000 && vistos.insert(b) {
+                        if let Some(tb) = busca_qq(b + 12, 4) {
+                            if u32::from_le_bytes([tb[0], tb[1], tb[2], tb[3]]) == task {
+                                tis.push(b);
+                            }
+                        }
+                    }
+                    b = b.wrapping_add(0x2000);
+                    if b < r.base {
+                        break;
+                    }
+                }
+            }
+            eprintln!("PARK task={task:#x} tis={tis:#x?}");
+            for ti in tis.iter().take(2) {
+                // Estado + comm do task_struct.
+                let st = busca_qq(task, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                let cm = busca_qq(task + 0x2e4, 16).map(|b| {
+                    let z = b.iter().position(|&x| x == 0).unwrap_or(16);
+                    String::from_utf8_lossy(&b[..z]).into_owned()
+                });
+                eprintln!("  task state={st:?} comm={cm:?}");
+                // Topo da pilha (2 KB): pt_regs + frames (wchan chain),
+                // palavra a palavra (regioes sao 4K).
+                {
+                    let mut usr = Vec::new();
+                    let mut kern = Vec::new();
+                    for k in 0..0x200u32 {
+                        let va = ti + 0x2000 - 0x800 + k * 4;
+                        if let Some(w) = busca_qq(va, 4) {
+                            let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                            if (0x4000_0000..0x4200_0000).contains(&v)
+                                || (0xAD00_0000..0xAE00_0000).contains(&v)
+                                || (0xAF00_0000..0xB000_0000).contains(&v)
+                                || (0xBE00_0000..0xC000_0000).contains(&v)
+                            {
+                                usr.push(format!("{va:#x}={v:#x}"));
+                            } else if (0xC000_0000..0xC800_0000).contains(&v) && v & 3 == 0 {
+                                kern.push(format!("{va:#x}={v:#x}"));
+                            }
+                        }
+                    }
+                    eprintln!("  usr=[{}]", usr.join(" "));
+                    eprintln!("  kern=[{}]", kern.join(" "));
+                }
+            }
+        }
+    }
+    // ASCII nas regioes do snap585; o offset contra task
+    // 0xc626e800 da o .comm. Remove with CRASHOBJ.
+    #[test]
+    fn temp_caca_comm() {
+        let caminho = "/tmp/opencode/snap585.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for pat in [b"system_server".as_slice(), b"app_process".as_slice(), b"servicemanager".as_slice(), b"mediaserver".as_slice(), b"zygote".as_slice()] {
+            let mut ach = 0;
+            for r in &foto.regioes {
+                let mut off = 0usize;
+                while let Some(pos) = r.dados.get(off..).and_then(|s| s.windows(pat.len()).position(|w| w == pat)) {
+                    let at = off + pos;
+                    // Contexto largo para tras: nome completo da prop.
+                    let lo = at.saturating_sub(48);
+                    let hi = (at + pat.len() + 4).min(r.dados.len());
+                    eprintln!(
+                        "COMM {:?} {:#x}+{:#x} dono={:?} ctx={:02x?}",
+                        String::from_utf8_lossy(pat), r.base, at, r.dono_mm, &r.dados[lo..hi],
+                    );
+                    ach += 1;
+                    if ach >= 8 {
+                        break;
+                    }
+                    off = at + pat.len();
+                }
+                if ach >= 8 {
+                    break;
+                }
+            }
+            if ach == 0 {
+                eprintln!("COMM {:?}: nada", String::from_utf8_lossy(pat));
+            }
+        }
+    }
+    // system_server?, c62ff000/400/800/c00, c6231c00, c6201000) no
+    // snap585 e caca .comm ASCII. Remove with CRASHOBJ.
+    #[test]
+    // TEMP (tombstone dump v2): headers (chunk==0) com nome
+    // tombstone_* + chunks de dados validos (1<=chunk<0x80000000)
+    // do mesmo obj; desconsidera deletados. Remove with CRASHOBJ.
+    #[test]
+    fn temp_dump_tomb2() {
+        let img = match std::fs::read("/tmp/opencode/nand-tomb.img") {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("sem nand-tomb.img ({e:?})");
+                return;
+            }
+        };
+        let u32le = |o: usize| -> u32 {
+            u32::from_le_bytes([img[o], img[o+1], img[o+2], img[o+3]])
+        };
+        // Headers com nome tombstone_*.
+        let mut objs = Vec::new();
+        for i in 0..(img.len() / 2112) {
+            let base = i * 2112;
+            let spare = base + 2048;
+            if u32le(spare + 8) != 0 {
+                continue;
+            }
+            if img[base] != 1 {
+                continue;
+            }
+            let fim = img[base + 10..base + 42].iter().position(|&b| b == 0).unwrap_or(32);
+            let nome = String::from_utf8_lossy(&img[base + 10..base + 10 + fim]).into_owned();
+            if nome.starts_with("tombstone") {
+                let obj = u32le(spare + 4);
+                let tam = u32le(base + 292);
+                eprintln!("HDR rec={i} obj={obj} nome={nome:?} tam={tam}");
+                objs.push(obj);
+            }
+        }
+        // Dados validos de cada obj.
+        for obj in objs {
+            let mut txt = Vec::new();
+            let mut nch = 0;
+            for i in 0..(img.len() / 2112) {
+                let base = i * 2112;
+                let spare = base + 2048;
+                if u32le(spare + 4) != obj {
+                    continue;
+                }
+                let c = u32le(spare + 8);
+                if c >= 1 && c < 0x80000000 {
+                    nch += 1;
+                    if txt.len() < 32768 {
+                        txt.extend_from_slice(&img[base..base + 2048]);
+                    }
+                }
+            }
+            eprintln!("DATA obj={obj} chunks={nch}");
+            for (k, ln) in String::from_utf8_lossy(&txt).lines().take(50).enumerate() {
+                let t = ln.trim_end_matches('\0').trim();
+                if !t.is_empty() {
+                    eprintln!("T[{k}]: {t}");
+                }
+            }
+        }
+    }
+    // conteudo das paginas de dados do tombstone_01.
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_dump_tomb() {
+        let img = match std::fs::read("/tmp/opencode/nand-tomb.img") {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("sem nand-tomb.img ({e:?})");
+                return;
+            }
+        };
+        let u32le = |o: usize| -> u32 {
+            u32::from_le_bytes([img[o], img[o+1], img[o+2], img[o+3]])
+        };
+        for i in 92830..92852 {
+            let base = i * 2112;
+            let spare = base + 2048;
+            let obj = u32le(spare + 4);
+            let chunk = u32le(spare + 8);
+            let tipo = img[base];
+            eprintln!("REC {i} obj={obj} chunk={chunk} tipo={tipo}");
+        }
+        // Acha o obj do tombstone_01 (header em 92838) e despeja
+        // seus chunks de dados como texto.
+        let obj = u32le(92838 * 2112 + 2048 + 4);
+        eprintln!("TOMB obj={obj}");
+        let mut txt = Vec::new();
+        for i in 0..131072 {
+            let base = i * 2112;
+            if base + 2112 > img.len() {
+                break;
+            }
+            let spare = base + 2048;
+            if u32le(spare + 4) == obj && u32le(spare + 8) >= 1 {
+                let c = u32le(spare + 8);
+                if txt.len() < 32768 {
+                    txt.extend_from_slice(&img[base..base + 2048]);
+                }
+                eprintln!("TOMB chunk={c} rec={i}");
+            }
+        }
+        let s = String::from_utf8_lossy(&txt);
+        // Primeiras 60 linhas legiveis.
+        for (k, ln) in s.lines().take(60).enumerate() {
+            let t = ln.trim_end_matches('\0').trim();
+            if !t.is_empty() || k < 5 {
+                eprintln!("TOMB[{k}]: {t}");
+            }
+        }
+    }
+    // nand-tomb.img para achar o nome real. Remove with CRASHOBJ.
+    #[test]
+    fn temp_lista_tomb() {
+        let img = match std::fs::read("/tmp/opencode/nand-tomb.img") {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("sem nand-tomb.img ({e:?})");
+                return;
+            }
+        };
+        // Varredura direta dos headers (tipo==1) por nome contendo
+        // "tomb", sem depender do indice.
+        let rec = img.len() / 2112;
+        let mut ach = 0;
+        for i in 0..rec {
+            let base = i * 2112;
+            if base + 42 > img.len() {
+                break;
+            }
+            if img[base] != 1 {
+                continue;
+            }
+            let fim = img[base + 10..base + 42].iter().position(|&b| b == 0).unwrap_or(32);
+            let nome = String::from_utf8_lossy(&img[base + 10..base + 10 + fim]).into_owned();
+            if nome.contains("tomb") || nome.contains("data") || nome == "system_server" || nome.contains("937") || nome.contains("37") {
+                eprintln!("YAFFS rec={i} nome={nome:?}");
+                ach += 1;
+                if ach >= 20 {
+                    break;
+                }
+            }
+        }
+        eprintln!("YAFFS: {ach} hits");
+    }
+    // nand-tomb.img (salvo em 583250, pos-escrita) via IndiceYaffs.
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_le_tombstone() {
+        let img = match std::fs::read("/tmp/opencode/nand-tomb.img") {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("sem nand-tomb.img ({e:?})");
+                return;
+            }
+        };
+        let idx = crate::msm7201a_yaffs::IndiceYaffs::constroi(&img);
+        eprintln!("arquivos={}", idx.arquivos());
+        let mut fora = vec![0u8; 65536];
+        for caminho in ["data/tombstones/tombstone_01", "tombstone_01", "/data/tombstones/tombstone_01"] {
+            if idx.le(&img, caminho, 0, &mut fora) {
+                let fim = fora.iter().position(|&b| b == 0).unwrap_or(fora.len());
+                let txt = String::from_utf8_lossy(&fora[..fim.min(8192)]);
+                eprintln!("TOMBSTONE {caminho}:\n{txt}");
+                return;
+            }
+        }
+        eprintln!("TOMBSTONE: nao achado");
+    }
+    // TEMP (exit frames): despeja 0x4104af40-0x4104afc0 no snap587
+    // (salvo no topo de 583005, fatia do exit_group(1); frames
+    // af84/af94 no nstk do exit) + chase Method* para nomear quem
+    // estava no caminho do exit. Remove with CRASHOBJ.
+    #[test]
+    fn temp_exit_frames() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(372064256)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        let nome_de = |pa: u32| -> Option<(String, String)> {
+            let wm = busca(pa, 36)?;
+            let pa_n = u32::from_le_bytes([wm[16], wm[17], wm[18], wm[19]]);
+            let cl = u32::from_le_bytes([wm[0], wm[1], wm[2], wm[3]]);
+            let mnb = busca(pa_n, 64)?;
+            let fim = mnb.iter().position(|&b| b == 0).unwrap_or(64);
+            let mn = String::from_utf8_lossy(&mnb[..fim]).into_owned();
+            if mn.is_empty() || !mn.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                return None;
+            }
+            let mut cla = String::from("?");
+            if let Some(wcl) = busca(cl, 32) {
+                let pa_d = u32::from_le_bytes([wcl[24], wcl[25], wcl[26], wcl[27]]);
+                if let Some(dnb) = busca(pa_d, 72) {
+                    let f2 = dnb.iter().position(|&b| b == 0).unwrap_or(72);
+                    let u = String::from_utf8_lossy(&dnb[..f2]).into_owned();
+                    if !u.is_empty() && u.len() < 70 {
+                        cla = u;
+                    }
+                }
+            }
+            Some((cla, mn))
+        };
+        if let Some(fr) = busca(0x4104af40, 128) {
+            for (k, w) in fr.chunks_exact(4).enumerate() {
+                let cand = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                if (0x4000_0000..0x4200_0000).contains(&cand) {
+                    if let Some((c, m)) = nome_de(cand) {
+                        eprintln!("EXITFR +{:#x}={cand:#x} \"{c}.{m}\"", k * 4);
+                    }
+                }
+            }
+            let links: Vec<u32> = fr[..32].chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            eprintln!("EXITFR links={links:#x?}");
+            let mid: Vec<u32> = fr[0x40..0x60].chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            eprintln!("EXITFR af84={mid:#x?}");
+        } else {
+            eprintln!("EXITFR: sem regiao");
+        }
+    }
+    // TEMP (stuck main): no snap587 (topo de 583005, system_server
+    // VIVO (morre 584338!)), despeja a pilha nativa da main thread
+    // (0xbe9b7000-0xbe9b8000, child) + frames Dalvik 0x4104a000
+    // para nomear onde esta travado (futex? binder? spin?).
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_main_travada() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(372064256)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for base in [0xbe9b7000u32, 0xbe9b6000, 0xbe9b5000] {
+            if let Some(b) = busca(base, 0x1000) {
+                let mut cands = Vec::new();
+                for (k, w) in b.chunks_exact(4).enumerate() {
+                    let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                    if (0xAD00_0000..0xAE00_0000).contains(&v)
+                        || (0xAF00_0000..0xB000_0000).contains(&v)
+                        || (0x0000_8000..0x0020_0000).contains(&v)
+                    {
+                        cands.push(format!("+{:#x}={v:#x}", k * 4));
+                    }
+                }
+                eprintln!("MAINTR base={base:#x} pcs=[{}]", cands.join(" "));
+            }
+        }
+        for off in [0x0usize, 0x80] {
+            if let Some(fr) = busca(0x4104a000 + off as u32, 128) {
+                let ws: Vec<u32> = fr.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                eprintln!("MAINFR +{off:#x}={ws:#x?}");
+            }
+        }
+    }
+    fn temp_quem_morreu() {
+        // c6201000 VIVO aqui (morreu em 583005); os outros ja mortos.
+        let caminho = "/tmp/opencode/snap584.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca_qq = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.base <= va && va + len <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for t in [0xc626e800u32, 0xc62ff000, 0xc62ff400, 0xc62ff800, 0xc62ffc00, 0xc6231c00, 0xc6201000] {
+            match busca_qq(t, 2048) {
+                Some(b) => {
+                    // Caca ASCII >= 4 chars (comm tem 16).
+                    let mut nomes = Vec::new();
+                    let mut i = 0usize;
+                    while i + 4 < b.len() {
+                        if b[i].is_ascii_graphic() && b[i+1].is_ascii_graphic() && b[i+2].is_ascii_graphic() && b[i+3].is_ascii_graphic() {
+                            let mut j = i;
+                            while j < b.len() && j < i + 16 && (b[j].is_ascii_graphic() || b[j] == b' ' || b[j] == b'/' || b[j] == b'.' || b[j] == b'_') {
+                                j += 1;
+                            }
+                            if j > i + 3 && (j >= b.len() || b[j] == 0) {
+                                nomes.push(format!("+{:#x}=\"{}\"", i, String::from_utf8_lossy(&b[i..j])));
+                                i = j;
+                                continue;
+                            }
+                        }
+                        i += 1;
+                    }
+                    eprintln!("TASK {t:#x}: {}", nomes.join(" "));
+                }
+                None => eprintln!("TASK {t:#x}: ausente"),
+            }
+        }
+    }
+    // String-candidatos no frame do findClass, INVKFR#22) no
+    // snap584. Remove with CRASHOBJ.
+    #[test]
+    // TEMP (abort caller): despeja paginas do abortador (libc
+    // 0xafe38000, linker 0xb000f000, app 0x8000) no snap585b para
+    // desmontar quem chamou abort (0xafe3892c? 0xb000f55c?
+    // 0x879e0?). Remove with CRASHOBJ.
+    #[test]
+    fn temp_quem_abortou() {
+        let caminho = "/tmp/opencode/snap585b.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for va in [0xafe38000u32, 0xb000f000, 0x8000, 0x9000] {
+            let mut achou = false;
+            for r in &foto.regioes {
+                if r.base == va {
+                    let saida = format!("/tmp/opencode/abort_{va:#x}.bin");
+                    std::fs::write(&saida, &r.dados).expect("grava");
+                    eprintln!("ABORTDUMP va={va:#x} dono={:?} -> {saida}", r.dono_mm);
+                    achou = true;
+                    break;
+                }
+            }
+            if !achou {
+                eprintln!("ABORTDUMP va={va:#x}: sem regiao base (tenta paginas vizinhas)");
+            }
+        }
+    }
+    // (lr do exit_group(1) que matou a task c6201000, FATAL#1) para
+    // ver se e exit() normal ou abort(). Remove with CRASHOBJ.
+    #[test]
+    // TEMP (init text): despeja paginas 0x8000-0xd000 do mm do init
+    // (dono 370540544) no snap585b para desmontar os call sites
+    // fork (0xbe38) e kill (0xcac8). Remove with CRASHOBJ.
+    #[test]
+    fn temp_init_texto() {
+        let caminho = "/tmp/opencode/snap585b.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for va in [0x8000u32, 0x9000, 0xa000, 0xb000, 0xc000, 0xd000] {
+            let mut achou = false;
+            for r in &foto.regioes {
+                if r.base == va && r.dono_mm == Some(370540544) {
+                    let saida = format!("/tmp/opencode/init_{va:#x}.bin");
+                    std::fs::write(&saida, &r.dados).expect("grava");
+                    eprintln!("INITDUMP va={va:#x} -> {saida}");
+                    achou = true;
+                    break;
+                }
+            }
+            if !achou {
+                eprintln!("INITDUMP va={va:#x}: ausente");
+            }
+        }
+    }
+    // 0xad047e87 no nstk do exit_group(1) — a fronteira JNI da
+    // thread que saiu) para nomear a chamada. Remove with CRASHOBJ.
+    #[test]
+    // TEMP (pid scan): procura 37 (system_server) nos 256 B de
+    // cada task morta para calibrar o offset de pid/tgid e separar
+    // threads (mesmo tgid) de processos. Remove with CRASHOBJ.
+    #[test]
+    fn temp_quem_pid2() {
+        let caminho = "/tmp/opencode/snap585b.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca_qq = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.base <= va && va + len <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for t in [0xc626e800u32, 0xc62ff000, 0xc62ff400, 0xc62ff800, 0xc62ffc00, 0xc6201000, 0xc6231c00] {
+            match busca_qq(t, 256) {
+                Some(b) => {
+                    let mut hits = Vec::new();
+                    for (k, w) in b.chunks_exact(4).enumerate() {
+                        let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                        if v == 37 || v == 28 || v == 1 || v == 32 {
+                            hits.push(format!("+{:#x}={v}", k * 4));
+                        }
+                    }
+                    eprintln!("PID2 task={t:#x} petits={}", hits.join(" "));
+                }
+                None => eprintln!("PID2 task={t:#x}: ausente"),
+            }
+        }
+    }
+    // ficam no inicio; pid 37 = system_server) para separar
+    // threads (mesmo pid) de processos. Remove with CRASHOBJ.
+    #[test]
+    fn temp_quem_pid() {
+        let caminho = "/tmp/opencode/snap585b.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca_qq = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.base <= va && va + len <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for t in [0xc626e800u32, 0xc62ff000, 0xc62ff400, 0xc62ff800, 0xc62ffc00, 0xc6201000, 0xc6231c00] {
+            match busca_qq(t, 128) {
+                Some(b) => {
+                    let ws: Vec<u32> = b.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                    eprintln!("PID task={t:#x} words={ws:?}");
+                }
+                None => eprintln!("PID task={t:#x}: ausente"),
+            }
+        }
+    }
+    // app_process) no snap585b — o fault pos-fork em pc=0xa738
+    // (ABORT#57) e de init ou app_process? Remove with CRASHOBJ.
+    #[test]
+    fn temp_filho_fork() {
+        let caminho = "/tmp/opencode/snap585b.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for (va, dono) in [(0xa000u32, 371425280u32), (0xa000u32, 372064256u32)] {
+            for r in &foto.regioes {
+                if r.base == va && r.dono_mm == Some(dono) {
+                    let saida = format!("/tmp/opencode/kid_{va:#x}_{dono}.bin");
+                    std::fs::write(&saida, &r.dados).expect("grava");
+                    eprintln!("KIDDUMP va={va:#x} dono={dono} -> {saida}");
+                    break;
+                }
+            }
+        }
+    }
+    // TEMP (init text): despeja 0xa000 do mm do init (0x16160000
+    // = 370440192) no snap5843x para desmontar o crash do filho
+    // (pc=0xa738, far=0x18). Remove with CRASHOBJ.
+    #[test]
+    fn temp_init_text() {
+        let caminho = "/tmp/opencode/snap5843x.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for r in &foto.regioes {
+            if r.base == 0xa000 {
+                eprintln!("SEED base={:#x} dono={:?} semente={:?} ger={} len={:#x}", r.base, r.dono_mm, r.semente_pa, r.geracao, r.dados.len());
+            }
+        }
+    }
+    // TEMP (exec stack strings): le a pilha do exec em 0xbe9add20
+    // no snap5853x (pos-exec, pre-morte) — argv sao ponteiros
+    // validos? strings legiveis? Remove with CRASHOBJ.
+    #[test]
+    fn temp_exec_stack() {
+        let caminho = "/tmp/opencode/snap5853x.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let le = |va: u32| -> Option<u32> {
+            for r in &foto.regioes {
+                if r.base <= va && va + 4 <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]));
+                }
+            }
+            None
+        };
+        let le_cstr = |va: u32| -> Option<String> {
+            for r in &foto.regioes {
+                if r.base <= va && va < r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    let z = r.dados[o..].iter().position(|&b| b == 0).unwrap_or(0);
+                    if z == 0 || z >= 128 {
+                        return None;
+                    }
+                    let t = String::from_utf8_lossy(&r.dados[o..o+z]).into_owned();
+                    if t.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                        return Some(t);
+                    }
+                    return None;
+                }
+            }
+            None
+        };
+        eprintln!("EXECSTK snap fat={} pc={:#x} mm={:#x}", foto.fatia, foto.pc, foto.mm_atual);
+        for i in 0..16 {
+            let va = 0xbe9add20u32 + i * 4;
+            let w = le(va).unwrap_or(0xDEADDEAD);
+            let s = if (0xbe00_0000..0xc000_0000).contains(&w) {
+                le_cstr(w).map(|t| format!(" -> {t:?}")).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            eprintln!("EXECSTK [{va:#x}]={w:#x}{s}");
+        }
+    }
+    // TEMP (child state): estado do filho c6231c00 no snap5843x
+    // (pos-fork 584323, vivo): task_struct (comm/pid/stack),
+    // thread_info + pt_regs (pc/sp/lr do retorno do fork). Se o
+    // pc for lixo, o fork esta quebrado; se pending tem SEGV, o
+    // assassino e herança. Remove with CRASHOBJ.
+    #[test]
+    fn temp_child_state() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let le = |va: u32| -> Option<u32> {
+            for r in &foto.regioes {
+                if r.base <= va && va + 4 <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]));
+                }
+            }
+            None
+        };
+        let task = 0xc6231c00u32;
+        // mm_users do mm do zygote (0xc61591c0?) em +0x28/+0x2c no
+        // snap587 (main morto, 5 daemons vivos -> ~5?): confirma
+        // offset para o gating da epoca (so invalida se last user).
+        let le = |va: u32| -> Option<u32> {
+            for r in &foto.regioes {
+                if r.base <= va && va + 4 <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]));
+                }
+            }
+            None
+        };
+        for off in [0x28u32, 0x2c, 0x30, 0x24, 0x20] {
+            eprintln!("CHILD zygotemm+{off:#x}={:#x}", le(0xc61591c0 + off).unwrap_or(0xDEADDEAD));
+        }
+        let mut comm = String::from("?");
+        for off in (0..256).step_by(4) {
+            let mut s = Vec::new();
+            let mut ok = true;
+            for k in 0..16 {
+                let va = task + off as u32 + k as u32;
+                let mut b = 0u8;
+                let mut achou = false;
+                for r in &foto.regioes {
+                    if r.base <= va && va < r.base + r.dados.len() as u32 {
+                        b = r.dados[(va - r.base) as usize];
+                        achou = true;
+                        break;
+                    }
+                }
+                if !achou || b == 0 {
+                    break;
+                }
+                if !(b.is_ascii_graphic() || b == b' ' || b == b'_' || b == b'/' || b == b'.') {
+                    ok = false;
+                    break;
+                }
+                s.push(b);
+            }
+            if ok && s.len() >= 4 {
+                comm = format!("+{off:#x}={}", String::from_utf8_lossy(&s));
+                break;
+            }
+        }
+        let stack = le(task + 4).unwrap_or(0);
+        let pid = le(task + 220).unwrap_or(0xDEAD);
+        eprintln!("CHILD task={task:#x} comm={comm} stack={stack:#x} pidish={pid:#x}");
+        // pt_regs no topo da thread_info (ARM: base+8K-...): despeja
+        // ultimas 18 words (r0-r12,sp,lr,pc,cpsr?) se stack valido
+        if (0xC000_0000..0xD000_0000).contains(&stack) {
+            for i in 0..18 {
+                let va = (stack + 0x2000 - 72) + i * 4;
+                eprintln!("CHILD preg[{i}]={:#x}", le(va).unwrap_or(0xDEADDEAD));
+            }
+        }
+    }
+    // TEMP (ctx switch): despeja a pagina com 0xC0214DCC
+    // (context_switch? chama finish_task_switch?) no snap5843x.
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_switch_site() {
+        let caminho = "/tmp/opencode/snap5843x.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for r in &foto.regioes {
+            if r.base <= 0xC0214DCC && 0xC0214DCC + 4 <= r.base + r.dados.len() as u32 {
+                let saida = "/tmp/opencode/ctx_c0214000.bin";
+                std::fs::write(&saida, &r.dados).expect("grava");
+                eprintln!("CTX base={:#x} len={:#x} -> {saida}", r.base, r.dados.len());
+                break;
+            }
+        }
+    }
+    // TEMP (ksegv caller): despeja a pagina do kernel com o lr do
+    // DOEXIT (0xC004A384, quem chamou do_exit com 0xb no FATAL#7)
+    // no snap587 + regiao do task c6231c00 se presente.
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_ksegv_caller() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for r in &foto.regioes {
+            if r.base <= 0xC004A384 && 0xC004A384 + 4 <= r.base + r.dados.len() as u32 {
+                let saida = "/tmp/opencode/ksegv_c004a000.bin";
+                std::fs::write(&saida, &r.dados).expect("grava");
+                eprintln!("KSEGV base={:#x} len={:#x} -> {saida}", r.base, r.dados.len());
+                break;
+            }
+        }
+    }
+    // TEMP (libc dump): despeja todas as regioes de texto da libc
+    // (VMA afe00000-afe35000) do mm pai no snap587 para varrer
+    // TODOS os BL->abort/_exit (achar quem chama EF36/EF38/EEB0).
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_libc_dump() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let mut n = 0u32;
+        for r in &foto.regioes {
+            if r.dono_mm == Some(371425280) && r.base >= 0xafe00000 && r.base < 0xafe35000 {
+                let saida = format!("/tmp/opencode/libcall_{:x}.bin", r.base);
+                std::fs::write(&saida, &r.dados).expect("grava");
+                eprintln!("LIBCALL base={:#x} len={:#x} -> {saida}", r.base, r.dados.len());
+                n += 1;
+            }
+        }
+        eprintln!("LIBCALL total={n}");
+    }
+    // TEMP (cena no load): a cena do abort (a8d5 em +36rel,
+    // frames DVM) ja esta na pagina be9b7000 no snap584 (load)?
+    // Se sim, a cena e pre-load (residuo) e a morte reusa.
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_cena_load() {
+        for caminho in ["/tmp/opencode/snap584.bin", "/tmp/opencode/snap582.bin"] {
+            let foto = match carrega(caminho) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("{caminho}: pula ({e:?})");
+                    continue;
+                }
+            };
+            let le = |va: u32| -> Option<u32> {
+                for r in &foto.regioes {
+                    if r.base <= va && va + 4 <= r.base + r.dados.len() as u32 {
+                        let o = (va - r.base) as usize;
+                        return Some(u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]));
+                    }
+                }
+                None
+            };
+            // varre a pagina be9b7000 por marcadores da cena
+            let mut a8 = 0u32;
+            let mut desta = 0u32;
+            let mut ad04 = 0u32;
+            for off in (0..0x2000).step_by(4) {
+                if let Some(w) = le(0xbe9b7000 + off as u32) {
+                    if w == 0xafe0a8d5 {
+                        a8 += 1;
+                    }
+                    if w == 0x410a4218 {
+                        desta += 1;
+                    }
+                    if (w & 0xFFFFF000) == 0xad040000 {
+                        ad04 += 1;
+                    }
+                }
+            }
+            eprintln!("CENA {caminho} a8d5={a8} main4218={desta} ad04xxx={ad04}");
+        }
+    }
+    // TEMP (heap hunt): procura o BK selvagem 0xb000f55c (slot
+    // r4 do frame do abort) nas regioes do snap587 + despeja o
+    // entorno (cabecalho de chunk dlmalloc: prev_size/size/fd/bk).
+    // Diz se o smash esta no heap da morte ou se e residuo.
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_heap_hunt() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let mut achados = 0u32;
+        for r in &foto.regioes {
+            let n = r.dados.len() / 4;
+            for i in 0..n {
+                let o = i * 4;
+                let w = u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]);
+                if w == 0xb000f55c {
+                    if achados < 12 {
+                        let va = r.base + o as u32;
+                        let pega = |off: i32| -> String {
+                            let a = va.wrapping_add(off as u32);
+                            let mut s = String::new();
+                            for k in 0..4 {
+                                let mut b = [0u8; 4];
+                                let mut ok = false;
+                                for rg in &foto.regioes {
+                                    let aa = a + k * 4;
+                                    if rg.base <= aa && aa + 4 <= rg.base + rg.dados.len() as u32 {
+                                        let oo = (aa - rg.base) as usize;
+                                        b.copy_from_slice(&rg.dados[oo..oo+4]);
+                                        ok = true;
+                                        break;
+                                    }
+                                }
+                                if ok {
+                                    s.push_str(&format!(" {:08x}", u32::from_le_bytes(b)));
+                                } else {
+                                    s.push_str(" ????????");
+                                }
+                            }
+                            s
+                        };
+                        eprintln!("HEAPHIT {va:#x} (regiao {base:#x} {nome}) -16:{nb} +16:{na}", base = r.base, nome = r.nome, nb = pega(-16), na = pega(16));
+                    }
+                    achados += 1;
+                }
+            }
+        }
+        eprintln!("HEAPHIT total={achados}");
+    }
+    // TEMP (metodos do frame): resolve Method* da pilha do EXITB
+    // (ZygoteInit.main=0x410a4218 como controle) para achar o metodo
+    // JNI que chamou dvmCreateCstrFromString. Layouts calibrados:
+    // Method {clazz+0,name+16,insns+32}, Class {descriptor+24},
+    // String {array+8,count+20}. Remove with CRASHOBJ.
+    #[test]
+    fn temp_frame_methods() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let le = |va: u32| -> Option<u32> {
+            for r in &foto.regioes {
+                if r.base <= va && va + 4 <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]));
+                }
+            }
+            None
+        };
+        let le_cstr = |va: u32| -> Option<String> {
+            for r in &foto.regioes {
+                if r.base <= va && va < r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    let z = r.dados[o..].iter().position(|&b| b == 0).unwrap_or(0);
+                    if z == 0 || z >= 128 {
+                        return None;
+                    }
+                    let t = String::from_utf8_lossy(&r.dados[o..o+z]).into_owned();
+                    if t.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                        return Some(t);
+                    }
+                    return None;
+                }
+            }
+            None
+        };
+        // StringObject -> texto via array+8/count+20 (utf16)
+        let le_jstr = |va: u32| -> Option<String> {
+            let arr = le(va + 8)?;
+            let cnt = le(va + 20)?;
+            if cnt == 0 || cnt >= 256 {
+                return None;
+            }
+            for r in &foto.regioes {
+                if r.base <= arr && arr + cnt * 2 <= r.base + r.dados.len() as u32 {
+                    let o = (arr - r.base) as usize;
+                    let u16s: Vec<u16> = (0..cnt as usize).map(|i| u16::from_le_bytes([r.dados[o + i * 2], r.dados[o + i * 2 + 1]])).collect();
+                    let s = String::from_utf16_lossy(&u16s);
+                    if s.bytes().all(|b| b.is_ascii_graphic() || b == b' ' || b == b'/' || b == b';' || b == b'(') {
+                        return Some(s);
+                    }
+                    return None;
+                }
+            }
+            None
+        };
+        for met in [0x410a4218u32, 0x41049200, 0x4107fd40, 0x4107fcb0, 0x41aa8b18, 0x41bafb67, 0x41b60387, 0x41a2eaf6] {
+            let cla = le(met).unwrap_or(0);
+            let nome = le(met + 16).unwrap_or(0);
+            let ins = le(met + 32).unwrap_or(0);
+            let desc = if cla != 0 { le(cla + 24).unwrap_or(0) } else { 0 };
+            let nm = le_jstr(nome).unwrap_or_else(|| format!("<?>"));
+            let dc = le_jstr(desc).or_else(|| le_cstr(desc)).unwrap_or_else(|| format!("<?>"));
+            eprintln!("METODO {met:#x} {dc}.{nm} ins={ins:#x}");
+        }
+    }
+    // TEMP (vma list): lista todas as VMAs com caminho para o mm
+    // pai (371425280) no snap587 — base real de libdvm (texto?),
+    // libc, linker e 0x40026xxx. Remove with CRASHOBJ.
+    #[test]
+    fn temp_vma_lista() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let le = |va: u32| -> Option<u32> {
+            for r in &foto.regioes {
+                if r.base <= va && va + 4 <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]));
+                }
+            }
+            None
+        };
+        let le_str = |va: u32| -> Option<String> {
+            for r in &foto.regioes {
+                if r.base <= va && va < r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    let z = r.dados[o..].iter().position(|&b| b == 0).unwrap_or(0);
+                    if z == 0 || z >= 64 {
+                        return None;
+                    }
+                    let t = String::from_utf8_lossy(&r.dados[o..o+z]).into_owned();
+                    if t.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                        return Some(t);
+                    }
+                    return None;
+                }
+            }
+            None
+        };
+        let mm = match foto.mm_para_mm.iter().find(|(a, _)| *a == 371425280) {
+            Some((_, m)) => *m,
+            None => {
+                eprintln!("VMALISTA: sem mm_struct pai");
+                return;
+            }
+        };
+        let mut vma = le(mm).unwrap_or(0);
+        let mut depth = 0u32;
+        while (0xC600_0000..0xC700_0000).contains(&vma) && depth < 400 {
+            depth += 1;
+            let ini = le(vma + 4).unwrap_or(0xFFFF_FFFF);
+            let fim = le(vma + 8).unwrap_or(0);
+            let arq = le(vma + 72).unwrap_or(0);
+            if arq != 0 {
+                let mut dent = le(arq + 12).unwrap_or(0);
+                let mut guard = 0u32;
+                let mut partes = Vec::new();
+                while (0xC000_0000..0xD000_0000).contains(&dent) && guard < 8 {
+                    guard += 1;
+                    if let (Some(np), Some(pai)) = (le(dent + 0x20), le(dent + 0x14)) {
+                        if let Some(nm) = le_str(np) {
+                            partes.push(nm);
+                        }
+                        if pai == dent {
+                            break;
+                        }
+                        dent = pai;
+                    } else {
+                        break;
+                    }
+                }
+                partes.reverse();
+                let p = partes.join("/");
+                if p.contains("dvm") || p.contains("libc") || p.contains("linker") || p.contains("libm") {
+                    eprintln!("VMALISTA [{ini:#x},{fim:#x}) /{p}");
+                }
+            } else if (0x40000000..0x50000000).contains(&ini) || (0xad000000..0xae000000).contains(&ini) {
+                eprintln!("VMALISTA [{ini:#x},{fim:#x}) anon");
+            }
+            vma = le(vma + 12).unwrap_or(0);
+        }
+    }
+    // TEMP (abort-tail caller): despeja paginas libc/linker do mm
+    // pai (371425280) no snap587 para identificar quem chamou
+    // 0xafe0ef37 (retorno 0xafe0a8d5 no nstk do EXITB; ponteiro
+    // 0xafe35d78; 0xb000f55c). Remove with CRASHOBJ.
+    #[test]
+    fn temp_abort_caller() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for va in [0xafe0a000u32, 0xafe35000u32, 0xafe0e000u32, 0xb000f000u32] {
+            for r in &foto.regioes {
+                if r.base == va && r.dono_mm == Some(371425280) {
+                    let saida = format!("/tmp/opencode/abtc_{va:#x}.bin");
+                    std::fs::write(&saida, &r.dados).expect("grava");
+                    eprintln!("ABTC va={va:#x} -> {saida}");
+                    break;
+                }
+            }
+        }
+    }
+    // TEMP (app caller): despeja 0x8000 do mm pai (371425280,
+    // app_process) no snap587 + desmonta em torno de 0x8014/0x79e0
+    // (retornos no nstk do exit_group). Remove with CRASHOBJ.
+    #[test]
+    fn temp_app_caller() {
+        let caminho = "/tmp/opencode/snap587.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for va in [0x8000u32] {
+            for r in &foto.regioes {
+                if r.base == va && r.dono_mm == Some(371425280) {
+                    let saida = format!("/tmp/opencode/appcall_{va:#x}.bin");
+                    std::fs::write(&saida, &r.dados).expect("grava");
+                    eprintln!("APPCALL va={va:#x} -> {saida}");
+                    break;
+                }
+            }
+        }
+    }
+    fn temp_quem_jni() {
+        let caminho = "/tmp/opencode/snap585b.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for va in [0xad047000u32] {
+            let mut achou = false;
+            for r in &foto.regioes {
+                if r.base == va {
+                    let saida = format!("/tmp/opencode/jni_{va:#x}_{}.bin", r.dono_mm.unwrap_or(0));
+                    std::fs::write(&saida, &r.dados).expect("grava");
+                    eprintln!("JNIDUMP va={va:#x} dono={:?} -> {saida}", r.dono_mm);
+                    achou = true;
+                }
+            }
+            if !achou {
+                eprintln!("JNIDUMP va={va:#x}: ausente");
+            }
+        }
+    }
+    fn temp_quem_saiu() {
+        let caminho = "/tmp/opencode/snap585b.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for va in [0xafe0e000u32, 0xafe0b000] {
+            for r in &foto.regioes {
+                if r.base == va {
+                    let saida = format!("/tmp/opencode/libc_exit_{va:#x}.bin");
+                    std::fs::write(&saida, &r.dados).expect("grava");
+                    eprintln!("EXITDUMP va={va:#x} dono={:?} -> {saida}", r.dono_mm);
+                    break;
+                }
+            }
+        }
+    }
+    fn temp_quem_falta() {
+        let caminho = "/tmp/opencode/snap584.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca_qq = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.base <= va && va + len <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for elem in [0x4001a610u32, 0x4001a6f0, 0x41074050, 0x4107f100] {
+            let dono = foto.regioes.iter().find(|r| r.base <= elem && elem < r.base + r.dados.len() as u32).map(|r| (r.base, r.dono_mm));
+            match busca_qq(elem, 28) {
+                Some(so) => {
+                    let ws: Vec<u32> = so.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                    let ap = ws[2];
+                    let off = ws[4];
+                    let cnt = ws[5];
+                    let mut tx = String::from("?");
+                    if (0x4000_0000..0x4300_0000).contains(&ap) && cnt > 0 && cnt <= 200 && off <= 200 {
+                        if let Some(ca) = busca_qq(ap + 12 + off * 2, (cnt * 2).min(400)) {
+                            let mut t = String::new();
+                            let mut k = 0usize;
+                            while k + 1 < ca.len() && (t.len() as u32) < cnt.min(120) {
+                                let ch = u16::from_le_bytes([ca[k], ca[k+1]]);
+                                if ch == 0 || ch > 0x7e {
+                                    break;
+                                }
+                                t.push(ch as u8 as char);
+                                k += 2;
+                            }
+                            if !t.is_empty() {
+                                tx = t;
+                            }
+                        }
+                    }
+                    eprintln!("QUEM elem={elem:#x} {dono:?} words={ws:#x?} \"{tx}\"");
+                }
+                None => eprintln!("QUEM elem={elem:#x}: ausente"),
+            }
+        }
+    }
+    // LinkageError/Error/Exception/NoClassDefFoundError e soletra
+    // todos os seus campos String (a mensagem nomeia a classe que
+    // falta). Remove with CRASHOBJ.
+    #[test]
+    fn temp_msg_excecao() {
+        let caminho = "/tmp/opencode/snap584.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        eprintln!("mm_atual={:#x} fatia={} pc={:#x}", foto.mm_atual, foto.fatia, foto.pc);
+        let busca = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(372064256)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        let busca_qq = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.base <= va && va + len <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        let soletra = |elem: u32| -> Option<String> {
+            let so = busca_qq(elem, 28)?;
+            let ap = u32::from_le_bytes([so[8], so[9], so[10], so[11]]);
+            let off = u32::from_le_bytes([so[16], so[17], so[18], so[19]]);
+            let cnt = u32::from_le_bytes([so[20], so[21], so[22], so[23]]);
+            if !(0x4000_0000..0x4300_0000).contains(&ap) || cnt == 0 || cnt > 300 || off > 300 {
+                return None;
+            }
+            let ca = busca_qq(ap + 12 + off * 2, cnt * 2)?;
+            let mut t = String::new();
+            let mut k = 0usize;
+            while k + 1 < ca.len() && (t.len() as u32) < cnt.min(120) {
+                let ch = u16::from_le_bytes([ca[k], ca[k+1]]);
+                if ch == 0 || ch > 0x7e {
+                    break;
+                }
+                t.push(ch as u8 as char);
+                k += 2;
+            }
+            if t.is_empty() { None } else { Some(t) }
+        };
+        let mut alvos: Vec<(String, u32)> = Vec::new();
+        for r in &foto.regioes {
+            if r.dono_mm != Some(372064256) || !(0x4000_0000..0x4200_0000).contains(&r.base) {
+                continue;
+            }
+            let n = r.dados.len() / 4;
+            let mut i = 0usize;
+            while i + 10 < n {
+                let pd = u32::from_le_bytes([r.dados[i*4+24], r.dados[i*4+25], r.dados[i*4+26], r.dados[i*4+27]]);
+                if (0x4000_0000..0x4300_0000).contains(&pd) {
+                    if let Some(sb) = busca(pd, 80) {
+                        let fim = sb.iter().position(|&b| b == 0).unwrap_or(80);
+                        let t = String::from_utf8_lossy(&sb[..fim]).into_owned();
+                        if t == "Ljava/lang/LinkageError;"
+                            || t == "Ljava/lang/NoClassDefFoundError;"
+                            || t == "Ljava/lang/ClassNotFoundException;"
+                            || t == "Ljava/lang/Exception;"
+                            || t == "Ljava/lang/Error;"
+                        {
+                            let cl = r.base + (i * 4) as u32;
+                            if !alvos.iter().any(|(_, c)| *c == cl) {
+                                eprintln!("EXCCLAZ \"{t}\" obj={cl:#x}");
+                                alvos.push((t, cl));
+                            }
+                        }
+                    }
+                }
+                i += 1;
+            }
+        }
+        for r in &foto.regioes {
+            if r.dono_mm != Some(372064256) || !(0x4000_0000..0x4200_0000).contains(&r.base) {
+                continue;
+            }
+            let n = r.dados.len() / 4;
+            let mut i = 0usize;
+            while i + 12 < n {
+                let w0 = u32::from_le_bytes([r.dados[i*4], r.dados[i*4+1], r.dados[i*4+2], r.dados[i*4+3]]);
+                if let Some((tn, _)) = alvos.iter().find(|(_, c)| *c == w0) {
+                    let va = r.base + (i * 4) as u32;
+                    let mut strs = Vec::new();
+                    for k in 1..12 {
+                        let wk = u32::from_le_bytes([
+                            r.dados[i*4+k*4], r.dados[i*4+k*4+1],
+                            r.dados[i*4+k*4+2], r.dados[i*4+k*4+3],
+                        ]);
+                        if (0x4000_0000..0x4200_0000).contains(&wk) {
+                            if let Some(s) = soletra(wk) {
+                                strs.push(format!("[+{:#x}]=\"{s}\"", k * 4));
+                            }
+                        }
+                    }
+                    eprintln!("EXCINST \"{tn}\" obj={va:#x} {}", strs.join(" "));
+                }
+                i += 1;
+            }
+        }
+        eprintln!("EXCINST: fim");
+    }
+    fn temp_string_layout() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(372064256)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        let mut ach = 0;
+        for r in &foto.regioes {
+            if r.dono_mm != Some(372064256) || !(0x4000_0000..0x4200_0000).contains(&r.base) {
+                continue;
+            }
+            let n = r.dados.len() / 4;
+            let mut i = 0usize;
+            while i + 10 < n {
+                let w0 = u32::from_le_bytes([r.dados[i*4], r.dados[i*4+1], r.dados[i*4+2], r.dados[i*4+3]]);
+                if w0 == 0x4000d5b0 {
+                    let va = r.base + (i * 4) as u32;
+                    let ob = busca(va, 28).unwrap();
+                    let ws: Vec<u32> = ob.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                    // Persegue array@+16 e soletra.
+                    let ap = ws[4];
+                    let mut tx = String::from("?");
+                    if (0x4000_0000..0x4200_0000).contains(&ap) {
+                        if let Some(ca) = busca(ap + 12, 40) {
+                            let mut t = String::new();
+                            let mut k = 0usize;
+                            while k + 1 < ca.len() && t.len() < 18 {
+                                let ch = u16::from_le_bytes([ca[k], ca[k+1]]);
+                                if ch == 0 || ch > 0x7e {
+                                    break;
+                                }
+                                t.push(ch as u8 as char);
+                                k += 2;
+                            }
+                            if !t.is_empty() {
+                                tx = t;
+                            }
+                        }
+                    }
+                    eprintln!("STR obj={va:#x} words={ws:#x?} \"{tx}\"");
+                    ach += 1;
+                    if ach >= 8 {
+                        return;
+                    }
+                }
+                i += 1;
+            }
+        }
+        eprintln!("STR: {ach}");
+    }
+    // (descritores exatos) no heap do filho para endireitar o
+    // viveiro (clazz=0 causa o ArrayStoreException). Remove with
+    // CRASHOBJ.
+    #[test]
+    fn temp_caca_clazz() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(372064256)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for alvo in ["Ljava/lang/String;", "[Ljava/lang/String;"] {
+            let mut ach = 0;
+            for r in &foto.regioes {
+                if r.dono_mm != Some(372064256) || !(0x4000_0000..0x4200_0000).contains(&r.base) {
+                    continue;
+                }
+                let n = r.dados.len() / 4;
+                let mut i = 0usize;
+                // ClassObject tem descritor em +24 (calibrado).
+                while i + 10 < n {
+                    let pd = u32::from_le_bytes([r.dados[i*4+24], r.dados[i*4+25], r.dados[i*4+26], r.dados[i*4+27]]);
+                    if (0x4000_0000..0x4300_0000).contains(&pd) {
+                        if let Some(sb) = busca(pd, 64) {
+                            let fim = sb.iter().position(|&b| b == 0).unwrap_or(64);
+                            if &sb[..fim] == alvo.as_bytes() {
+                                eprintln!("CLAZZ \"{alvo}\" obj={:#x}", r.base + (i * 4) as u32);
+                                ach += 1;
+                                if ach >= 4 {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                if ach >= 4 {
+                    break;
+                }
+            }
+            if ach == 0 {
+                eprintln!("CLAZZ \"{alvo}\": nada");
+            }
+        }
+    }
+    // <init> cujo insns cai em 0x4150f100-0x4150f220 (o leaf da
+    // cadeia INVOKE#2-4); sua clazz nomeia a excecao. Remove with
+    // CRASHOBJ.
+    #[test]
+    fn temp_caca_leaf() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(372064256)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        let nome_de = |pa: u32| -> Option<String> {
+            let b = busca(pa, 64)?;
+            let fim = b.iter().position(|&b| b == 0).unwrap_or(64);
+            let t = String::from_utf8_lossy(&b[..fim]).into_owned();
+            if !t.is_empty() && t.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                Some(t)
+            } else {
+                None
+            }
+        };
+        let mut ach = 0;
+        for r in &foto.regioes {
+            if r.dono_mm != Some(372064256) || !(0x4000_0000..0x4200_0000).contains(&r.base) {
+                continue;
+            }
+            let n = r.dados.len() / 4;
+            let mut i = 0usize;
+            while i + 10 < n {
+                let m = r.base + (i * 4) as u32;
+                let insns = u32::from_le_bytes([r.dados[i*4+32], r.dados[i*4+33], r.dados[i*4+34], r.dados[i*4+35]]);
+                if (0x4150f100..0x4150f220).contains(&insns) {
+                    let pa_nome = u32::from_le_bytes([r.dados[i*4+16], r.dados[i*4+17], r.dados[i*4+18], r.dados[i*4+19]]);
+                    let cl = u32::from_le_bytes([r.dados[i*4], r.dados[i*4+1], r.dados[i*4+2], r.dados[i*4+3]]);
+                    let nm = nome_de(pa_nome).unwrap_or_else(|| "?".to_string());
+                    let mut cla = "?".to_string();
+                    if let Some(wcl) = busca(cl, 32) {
+                        let pa_d = u32::from_le_bytes([wcl[24], wcl[25], wcl[26], wcl[27]]);
+                        if let Some(t) = nome_de(pa_d) {
+                            cla = t;
+                        }
+                    }
+                    eprintln!("LEAF m={m:#x} insns={insns:#x} \"{cla}.{nm}\"");
+                    ach += 1;
+                    if ach >= 20 {
+                        return;
+                    }
+                }
+                i += 1;
+            }
+        }
+        eprintln!("LEAF: {ach} candidatos");
+    }
+    // procurando objetos-heap com algum campo apontando para o
+    // buffer de captura (0x42fda8f0..0x42fda920) E clazz cujo
+    // descritor contem "Exception". Remove with CRASHOBJ.
+    #[test]
+    fn temp_caca_excecao() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca = |va: u32, len: u32, dono: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(dono)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        let desc_de = |cl: u32, dono: u32| -> Option<String> {
+            let cb = busca(cl, 32, dono)?;
+            let pd = u32::from_le_bytes([cb[24], cb[25], cb[26], cb[27]]);
+            for d2 in [dono, 371425280u32, 372064256u32] {
+                if let Some(sb) = busca(pd, 96, d2) {
+                    let fim = sb.iter().position(|&b| b == 0).unwrap_or(96);
+                    let t = String::from_utf8_lossy(&sb[..fim]).into_owned();
+                    if !t.is_empty() && t.len() < 90 {
+                        return Some(t);
+                    }
+                }
+            }
+            None
+        };
+        for dono in [372064256u32, 371425280u32] {
+            let mut ach = 0;
+            for r in &foto.regioes {
+                if r.dono_mm != Some(dono) || !(0x4000_0000..0x4200_0000).contains(&r.base) {
+                    continue;
+                }
+                let n = r.dados.len() / 4;
+                let mut i = 0usize;
+                while i + 10 < n {
+                    let w0 = u32::from_le_bytes([r.dados[i*4], r.dados[i*4+1], r.dados[i*4+2], r.dados[i*4+3]]);
+                    // Candidato a objeto: clazz plausivel em +0?
+                    if !(0x4000_0000..0x4200_0000).contains(&w0) {
+                        i += 1;
+                        continue;
+                    }
+                    // Algum campo em +4..+40 aponta para o buffer?
+                    let mut toca = false;
+                    for k in 1..10 {
+                        let wk = u32::from_le_bytes([
+                            r.dados[i*4+k*4], r.dados[i*4+k*4+1],
+                            r.dados[i*4+k*4+2], r.dados[i*4+k*4+3],
+                        ]);
+                        if (0x42fda8f0..0x42fdab00).contains(&wk) {
+                            toca = true;
+                            break;
+                        }
+                    }
+                    if toca {
+                        let cand = r.base + (i * 4) as u32;
+                        let d = desc_de(w0, dono).unwrap_or_else(|| "?".to_string());
+                        eprintln!("EXC dono={dono:#x} obj={cand:#x} clazz={w0:#x} \"{d}\"");
+                        // Despeja 48 B do objeto (message? cause?).
+                        if let Some(ob) = busca(cand, 48, dono) {
+                            eprintln!("  head={:02x?}", &ob[..48]);
+                        }
+                        ach += 1;
+                        if ach >= 10 {
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+                if ach >= 10 {
+                    break;
+                }
+            }
+            if ach == 0 {
+                eprintln!("EXC dono={dono:#x}: nada");
+            }
+        }
+    }
+    // (realloc 0x42fda8f0->0x42fda918; CAPBUF leu o primeiro alloc
+    // com 4 pares + lixo). Le os 9 pares em 0x42fda918 e recaptura
+    // quem aponta para ele. Remove with CRASHOBJ.
+    #[test]
+    fn temp_caparray() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca = |va: u32, len: u32, dono: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(dono)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for dono in [372064256u32, 371425280u32] {
+            if let Some(b) = busca(0x42fda918, 160, dono) {
+                let ws: Vec<u32> = b.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                eprintln!("CAP918 dono={dono:#x} words={ws:#x?}");
+            } else {
+                eprintln!("CAP918 dono={dono:#x}: ausente");
+            }
+        }
+        // Quem aponta para a base final (stackState do Throwable?).
+        for dono in [372064256u32, 371425280u32] {
+            let mut ach = 0;
+            for r in &foto.regioes {
+                if r.dono_mm != Some(dono) || r.dados.len() < 8 {
+                    continue;
+                }
+                let n = r.dados.len() / 4;
+                let mut i = 0usize;
+                while i < n {
+                    let w = u32::from_le_bytes([r.dados[i*4], r.dados[i*4+1], r.dados[i*4+2], r.dados[i*4+3]]);
+                    if w == 0x42fda918 {
+                        eprintln!("CAPREF dono={dono:#x} {:#x}+{:#x}", r.base, i * 4);
+                        ach += 1;
+                        if ach >= 10 {
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+                if ach >= 10 {
+                    break;
+                }
+            }
+            if ach == 0 {
+                eprintln!("CAPREF dono={dono:#x}: nada");
+            }
+        }
+    }
+    // 0x41aa7b5e (call site do arraycopy, INVOKE#1) e 0x41aa898c
+    // (savedPc do frame af00) para ver o que zygoteInit faz com
+    // argv (sget System.out? close? parse?). Remove with CRASHOBJ.
+    #[test]
+    fn temp_zinit_bytes() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for (base, lo, hi) in [(0x41aa7000u32, 0xa80usize, 0xc00usize), (0x41aa8000u32, 0x880usize, 0x960usize)] {
+            for r in &foto.regioes {
+                if r.base == base && r.dono_mm == Some(372064256) {
+                    eprintln!("ZINIT {base:#x}+{lo:#x}..{hi:#x}: {:02x?}", &r.dados[lo..hi.min(r.dados.len())]);
+                    break;
+                }
+            }
+        }
+    }
+    // em dex 0x4150f204, INVOKE#2) para ver se ha const-string
+    // (mensagem) por perto. Remove with CRASHOBJ.
+    #[test]
+    fn temp_newsite() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for r in &foto.regioes {
+            if r.base == 0x4150f000 && r.dono_mm == Some(372064256) {
+                let lo = 0x1c0usize;
+                let hi = 0x260usize.min(r.dados.len());
+                eprintln!("NEWSITE 0x4150f000+{lo:#x}..{hi:#x}: {:02x?}", &r.dados[lo..hi]);
+                return;
+            }
+        }
+        eprintln!("NEWSITE: sem regiao");
+    }
+    // sobre o snapshot (mm_para_mm + paginas do kernel) para nomear
+    // o arquivo de um VA sem precisar de rerun. Remove with CRASHOBJ.
+    #[test]
+    // TEMP (VMA do fault): nomeia o arquivo de 0xa738 no mm pai
+    // (0x16238000) no snap585b — e app_process mesmo ou outro?
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_vma_a738() {
+        let caminho = "/tmp/opencode/snap585b.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let le = |va: u32| -> Option<u32> {
+            for r in &foto.regioes {
+                if r.base <= va && va + 4 <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]));
+                }
+            }
+            None
+        };
+        let le_str = |va: u32| -> Option<String> {
+            for r in &foto.regioes {
+                if r.base <= va && va < r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    let z = r.dados[o..].iter().position(|&b| b == 0).unwrap_or(0);
+                    if z == 0 || z >= 128 {
+                        return None;
+                    }
+                    let t = String::from_utf8_lossy(&r.dados[o..o+z]).into_owned();
+                    if t.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                        return Some(t);
+                    }
+                    return None;
+                }
+            }
+            None
+        };
+        for (mm, va) in [(0x16238000u32, 0xa738u32), (0x16238000u32, 0x8000u32), (0x162d4000u32, 0xa738u32)] {
+            let m = match foto.mm_para_mm.iter().find(|(a, _)| *a == mm) {
+                Some((_, m)) => *m,
+                None => {
+                    eprintln!("VMA738 mm={mm:#x}: sem mm_struct");
+                    continue;
+                }
+            };
+            let mut vma = le(m).unwrap_or(0);
+            let mut depth = 0u32;
+            let mut achou = None;
+            while (0xC600_0000..0xC700_0000).contains(&vma) && depth < 200 {
+                depth += 1;
+                let ini = le(vma + 4).unwrap_or(0xFFFF_FFFF);
+                let fim = le(vma + 8).unwrap_or(0);
+                if ini <= va && va < fim {
+                    let arq = le(vma + 72).unwrap_or(0);
+                    achou = Some((ini, fim, arq));
+                    break;
+                }
+            }
+            match achou {
+                Some((ini, fim, arq)) => {
+                    let mut partes = Vec::new();
+                    if arq != 0 {
+                        let mut dent = le(arq + 12).unwrap_or(0);
+                        let mut guard = 0u32;
+                        while (0xC000_0000..0xD000_0000).contains(&dent) && guard < 8 {
+                            guard += 1;
+                            if let (Some(np), Some(pai)) = (le(dent + 0x20), le(dent + 0x14)) {
+                                if let Some(nm) = le_str(np) {
+                                    partes.push(nm);
+                                }
+                                if pai == dent {
+                                    break;
+                                }
+                                dent = pai;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    partes.reverse();
+                    eprintln!("VMA738 mm={mm:#x} va={va:#x} [{ini:#x},{fim:#x}) /{}", partes.join("/"));
+                }
+                None => eprintln!("VMA738 mm={mm:#x} va={va:#x}: sem VMA", ),
+            }
+        }
+    }
+    fn temp_vma_arquivo() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let le = |va: u32| -> Option<u32> {
+            for r in &foto.regioes {
+                if r.base <= va && va + 4 <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(u32::from_le_bytes([r.dados[o], r.dados[o+1], r.dados[o+2], r.dados[o+3]]));
+                }
+            }
+            None
+        };
+        let le_str = |va: u32| -> Option<String> {
+            for r in &foto.regioes {
+                if r.base <= va && va < r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    let z = r.dados[o..].iter().position(|&b| b == 0).unwrap_or(0);
+                    if z == 0 || z >= 128 {
+                        return None;
+                    }
+                    let t = String::from_utf8_lossy(&r.dados[o..o+z]).into_owned();
+                    if t.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                        return Some(t);
+                    }
+                    return None;
+                }
+            }
+            None
+        };
+        for (mm, vas) in [
+            (0x162d4000u32, [0x4150f204u32, 0x414e04b0, 0x414dff86, 0x41aa7b5e, 0x41bc5f76]),
+        ] {
+            let m = match foto.mm_para_mm.iter().find(|(a, _)| *a == mm) {
+                Some((_, m)) => *m,
+                None => {
+                    eprintln!("VMA mm={mm:#x}: sem mm_struct");
+                    continue;
+                }
+            };
+            eprintln!("VMA mm={mm:#x} mm_struct={m:#x}");
+            for va in vas {
+                // Walk lista VMA a partir de M+0.
+                let mut vma = match le(m) {
+                    Some(v) => v,
+                    None => {
+                        eprintln!("VMA va={va:#x}: M ilegivel");
+                        continue;
+                    }
+                };
+                let mut achou = None;
+                let mut depth = 0u32;
+                while (0xC600_0000..0xC700_0000).contains(&vma) && depth < 200 {
+                    depth += 1;
+                    let ini = le(vma + 4).unwrap_or(0xFFFF_FFFF);
+                    let fim = le(vma + 8).unwrap_or(0);
+                    if ini <= va && va < fim {
+                        let pgoff = le(vma + 68).unwrap_or(0);
+                        let arq = le(vma + 72).unwrap_or(0);
+                        achou = Some((ini, fim, pgoff, arq));
+                        break;
+                    }
+                    vma = le(vma + 12).unwrap_or(0);
+                }
+                match achou {
+                    Some((ini, fim, pgoff, arq)) => {
+                        let mut partes = Vec::new();
+                        if arq != 0 {
+                            let mut dent = le(arq + 12).unwrap_or(0);
+                            let mut guard = 0u32;
+                            while (0xC000_0000..0xD000_0000).contains(&dent) && guard < 8 {
+                                guard += 1;
+                                if let (Some(np), Some(pai)) = (le(dent + 0x20), le(dent + 0x14)) {
+                                    if let Some(nm) = le_str(np) {
+                                        partes.push(nm);
+                                    }
+                                    if pai == dent {
+                                        break;
+                                    }
+                                    dent = pai;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        partes.reverse();
+                        eprintln!("VMA va={va:#x} [{ini:#x},{fim:#x}) pgoff={pgoff:#x} arq={arq:#x} /{}", partes.join("/"));
+                    }
+                    None => eprintln!("VMA va={va:#x}: sem VMA"),
+                }
+            }
+        }
+    }
+    // (main 0x410a4218, handleSystemServerProcess 0x410a41b8,
+    // zygoteInit 0x4107f540, arraycopy 0x4105c6f8, close 0x410addf8)
+    // + persegue clazz ([m+0]) ate o descritor da classe, para
+    // calibrar offsets e nomear CLASSE+metodo no INVOKE.
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_metodo_classe() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca = |va: u32, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(372064256)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for m in [0x410a4218u32, 0x410a41b8, 0x4107f540, 0x4105c6f8, 0x410addf8, 0x4104f080] {
+            let mb = match busca(m, 40) {
+                Some(b) => b,
+                None => {
+                    eprintln!("MET m={m:#x}: ausente");
+                    continue;
+                }
+            };
+            let ws: Vec<u32> = mb.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            eprintln!("MET m={m:#x} words={ws:#x?}");
+            // clazz = [m+0]; despeja 64 B e caca descritor ASCII.
+            let cl = ws[0];
+            if !(0x4000_0000..0x4200_0000).contains(&cl) {
+                continue;
+            }
+            if let Some(cb) = busca(cl, 96) {
+                let cws: Vec<u32> = cb.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                eprintln!("  CLAZZ {cl:#x} words={cws:#x?}");
+                // Qualquer palavra apontando para ASCII com '/' ou
+                // terminando em ';' pode ser o descritor.
+                for (k, w) in cws.iter().enumerate() {
+                    if (0x4000_0000..0x4300_0000).contains(w) {
+                        if let Some(sb) = busca(*w, 72) {
+                            let fim = sb.iter().position(|&b| b == 0).unwrap_or(72);
+                            let t = String::from_utf8_lossy(&sb[..fim]);
+                            if !t.is_empty()
+                                && t.len() < 70
+                                && t.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
+                            {
+                                eprintln!("    [+{:#x}] -> \"{t}\"", k * 4);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // (pos-captura do fillInStackTrace, pre-shutdown) e disseca: o
+    // buffer de captura 0x42fda8f0, os 9 frames aecc-aff0 (128 B +
+    // chase de Method*), quem aponta para o buffer (dono do
+    // Throwable), slot v10 e palavra do WALKERFIX. Remove with
+    // CRASHOBJ.
+    #[test]
+    fn temp_dissec583() {
+        let caminho = "/tmp/opencode/snap583.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        eprintln!("mm_atual={:#x} fatia={} pc={:#x}", foto.mm_atual, foto.fatia, foto.pc);
+        let busca = |va: u32, len: u32, dono: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == Some(dono)
+                    && r.base <= va
+                    && va + len <= r.base + r.dados.len() as u32
+                {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        // Donos provaveis do filho (0x162D4000) e do pai.
+        for dono in [372064256u32, 371425280u32] {
+            if let Some(b) = busca(0x42fda8f0, 256, dono) {
+                let ws: Vec<u32> = b.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                eprintln!("CAPBUF dono={dono:#x} words={ws:#x?}");
+            }
+        }
+        // Quem aponta para o buffer (stackState do Throwable?).
+        for dono in [372064256u32, 371425280u32] {
+            let mut ach = 0;
+            for r in &foto.regioes {
+                if r.dono_mm != Some(dono) || r.dados.len() < 8 {
+                    continue;
+                }
+                let n = r.dados.len() / 4;
+                let mut i = 0usize;
+                while i < n {
+                    let w = u32::from_le_bytes([r.dados[i*4], r.dados[i*4+1], r.dados[i*4+2], r.dados[i*4+3]]);
+                    if (0x42fda8f0..0x42fdab00).contains(&w) {
+                        eprintln!("BUFREF dono={dono:#x} {:#x}+{:#x} -> {w:#x}", r.base, i * 4);
+                        ach += 1;
+                        if ach >= 10 {
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+                if ach >= 10 {
+                    break;
+                }
+            }
+            if ach == 0 {
+                eprintln!("BUFREF dono={dono:#x}: nada");
+            }
+        }
+        // Frames + chase de Method* (nome via +16).
+        for fp in [0x4104aeccu32, 0x4104aedc, 0x4104af00, 0x4104af3c, 0x4104af64, 0x4104afa0, 0x4104afcc, 0x4104afdc, 0x4104aff0] {
+            for dono in [372064256u32, 371425280u32] {
+                if let Some(fr) = busca(fp, 128, dono) {
+                    let mut ach = String::new();
+                    let mut i = 0usize;
+                    while i + 4 <= 128 {
+                        let cand = u32::from_le_bytes([fr[i], fr[i+1], fr[i+2], fr[i+3]]);
+                        if (0x4000_0000..0x4200_0000).contains(&cand) {
+                            if let Some(wm) = busca(cand, 32, dono) {
+                                let pa = u32::from_le_bytes([wm[16], wm[17], wm[18], wm[19]]);
+                                for dono2 in [dono, 371425280u32, 372064256u32] {
+                                    if let Some(mnb) = busca(pa, 48, dono2) {
+                                        let fim = mnb.iter().position(|&b| b == 0).unwrap_or(48);
+                                        let t = String::from_utf8_lossy(&mnb[..fim]);
+                                        if !t.is_empty() && t.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                                            ach.push_str(&format!(" [+{i:#x}]={cand:#x} \"{t}\";"));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        i += 4;
+                    }
+                    // Palavras de controle do frame (links).
+                    let links: Vec<u32> = fr[..32].chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                    eprintln!("FRAME dono={dono:#x} fp={fp:#x} links={links:#x?}{ach}");
+                    break;
+                }
+            }
+        }
+        // Slot v10 + palavra do walker + nosso viveiro.
+        for dono in [372064256u32] {
+            for (va, tag) in [(0x4104af38u32, "V10"), (0x4104af6cu32, "WFX"), (0xe4280100u32, "ARR"), (0xe4280108u32, "ARRLEN")] {
+                match busca(va, 4, dono) {
+                    Some(b) => eprintln!("{tag} dono={dono:#x} [{va:#x}]={:#x}", u32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+                    None => eprintln!("{tag} dono={dono:#x} [{va:#x}]: ausente"),
+                }
+            }
+        }
+    }
+    // chamador em dex 0x414dff86 do INVOKE#5 fillInStackTrace e o
+    // 0x414e04b0 do INVOKE#4) para decodificar o Dalvik a mao.
+    // Remove with CRASHOBJ.
+    #[test]
+    fn temp_despeja_dex_caller() {
+        let caminho = "/tmp/opencode/snap582.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for (va, nome) in [(0x414df000u32, "df"), (0x414e0000u32, "e0")] {
+            for r in &foto.regioes {
+                if r.base == va && r.dono_mm == Some(372064256) {
+                    let saida = format!("/tmp/opencode/dex414{nome}.bin");
+                    std::fs::write(&saida, &r.dados).expect("grava");
+                    eprintln!("DEXDUMP va={va:#x} -> {saida} len={}", r.dados.len());
+                    // Hexdump da vizinhanca do pc de interesse.
+                    let alvo: usize = if va == 0x414df000 { 0xf86 } else { 0x4b0 };
+                    let lo = alvo.saturating_sub(64);
+                    let hi = (alvo + 32).min(r.dados.len());
+                    eprintln!("DEXBYTES {va:#x}+{lo:#x}..{hi:#x}: {:02x?}", &r.dados[lo..hi]);
+                    break;
+                }
+            }
+        }
+    }
+    // os dex pcs do wall (0x41aa7xxx walker, 0x414dff86 chamador do
+    // fillInStackTrace, 0x4150f204 invokes) — sem isso, VA->arquivo
+    // e desmontagem offline sao chute. Remove with CRASHOBJ.
+    #[test]
+    fn temp_quem_e_o_dex() {
+        let caminho = "/tmp/opencode/snap582.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        for va in [0x41aa7a94u32, 0x414dff86, 0x4150f204, 0x414e04b0, 0x41aa898c, 0x41aa8b18] {
+            let mut achou = false;
+            for r in &foto.regioes {
+                if r.base <= va && va < r.base + r.dados.len() as u32 {
+                    eprintln!(
+                        "DEXVA va={va:#x} regiao={:#x} dono={:?} nome={} semente={:?} len={:#x}",
+                        r.base, r.dono_mm, r.nome, r.semente_pa, r.dados.len(),
+                    );
+                    achou = true;
+                }
+            }
+            if !achou {
+                eprintln!("DEXVA va={va:#x}: sem regiao");
+            }
+        }
+    }
+    // TEMP (shutdown-caller): despeja as paginas do libdvm.so em
+    // torno de 0xad34b334 (retorno do __android_log_write que grava
+    // "Shutting down VM", LOGWR#1) para desmontar e nomear quem
+    // decide o shutdown. Remove with CRASHOBJ.
+    #[test]
+    fn temp_despeja_libdvm_shutdown() {
+        let caminho = "/tmp/opencode/snap582.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let mut fora = Vec::new();
+        for va in (0xad34b000u32..0xad34c000).step_by(0x1000) {
+            let mut achou = false;
+            for dono in [Some(372064256u32), Some(371425280u32), None] {
+                let mut hit = None;
+                for r in &foto.regioes {
+                    if r.dono_mm == dono && r.base == va {
+                        hit = Some(r.dados.clone());
+                        break;
+                    }
+                }
+                if let Some(d) = hit {
+                    eprintln!("LIBDVM va={va:#x} dono={dono:?} len={}", d.len());
+                    fora.extend_from_slice(&d);
+                    achou = true;
+                    break;
+                }
+            }
+            if !achou {
+                eprintln!("LIBDVM va={va:#x}: ausente");
+                fora.extend(vec![0; 0x1000]);
+            }
+        }
+        std::fs::write("/tmp/opencode/libdvm_34b.bin", &fora).expect("grava");
+        eprintln!("LIBDVM dump {} bytes -> /tmp/opencode/libdvm_34b.bin", fora.len());
+    }
+    // (v10 saudavel no mm pai 0x16238000) nos dois mms + persegue
+    // os elementos como String. Se for String[] com a classname,
+    // vira o valor do restore. Remove with CRASHOBJ.
+    #[test]
+    fn temp_confere_array_419eacc0() {
+        let caminho = "/tmp/opencode/snap582.bin";
+        let foto = match carrega(caminho) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{caminho}: pula ({e:?})");
+                return;
+            }
+        };
+        let busca = |va: u32, dono: Option<u32>, len: u32| -> Option<Vec<u8>> {
+            for r in &foto.regioes {
+                if r.dono_mm == dono && r.base <= va && va + len <= r.base + r.dados.len() as u32 {
+                    let o = (va - r.base) as usize;
+                    return Some(r.dados[o..o + len as usize].to_vec());
+                }
+            }
+            None
+        };
+        for dono in [Some(371425280u32), Some(372064256u32)] {
+            eprintln!("== dono={dono:?} ==");
+            let hdr = match busca(0x419eacc0, dono, 64) {
+                Some(h) => h,
+                None => {
+                    eprintln!("ARR419EACC0 dono={dono:?}: pagina ausente");
+                    continue;
+                }
+            };
+            eprintln!("ARR419EACC0 dono={dono:?} head={:02x?}", &hdr[..32]);
+            let len = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+            eprintln!("ARR419EACC0 dono={dono:?} len={len}");
+            if len > 16 {
+                continue;
+            }
+            for i in 0..len {
+                let eo = 12 + (i * 4) as usize;
+                if eo + 4 > hdr.len() {
+                    break;
+                }
+                let elem = u32::from_le_bytes([hdr[eo], hdr[eo+1], hdr[eo+2], hdr[eo+3]]);
+                let mut nm = String::from("?");
+                if let Some(so) = busca(elem, dono, 20) {
+                    let ap = u32::from_le_bytes([so[16], so[17], so[18], so[19]]);
+                    if let Some(ca) = busca(ap + 12, dono, 64) {
+                        let mut t = String::new();
+                        let mut k = 0usize;
+                        while k + 1 < ca.len() && t.len() < 48 {
+                            let ch = u16::from_le_bytes([ca[k], ca[k+1]]);
+                            if ch == 0 || ch > 0x7e {
+                                break;
+                            }
+                            t.push(ch as u8 as char);
+                            k += 2;
+                        }
+                        if !t.is_empty() {
+                            nm = t;
+                        }
+                    }
+                    eprintln!(
+                        "  elem[{i}]={elem:#x} strobj={:02x?} \"{nm}\"",
+                        &so[..20],
+                    );
+                } else {
+                    eprintln!("  elem[{i}]={elem:#x} ilegivel");
+                }
+            }
+        }
+    }
+
     fn volta(dados: &[u8]) -> Vec<u8> {
         let mut v = Vec::new();
         poe_rle(&mut v, dados);

@@ -3602,7 +3602,7 @@ pub static mut TTBR_TASK: u32 = 0;
     cpu.trap_pc_mem(0xC002_11F4, move |mem, regs| {
         static mut N: u32 = 0;
         unsafe {
-            if N < 6 {
+            if N < 40 {
                 N += 1;
                 let n = N;
                 let ti = regs[13] & !0x1FFF;
@@ -3625,17 +3625,97 @@ pub static mut TTBR_TASK: u32 = 0;
         cpu.trap_pc_mem(va, move |mem, regs| {
             static mut N: u32 = 0;
             unsafe {
-                if N < 6 {
+                if N < 40 {
                     N += 1;
                     let n = N;
                     let ti = regs[13] & !0x1FFF;
                     let task = mem.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
                     eprintln!("FATAL#{n} {nm} f={} sig={:#x} task={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], task, regs[14]);
                 }
+                // TEMP (death-anchored epochs): record the dying mm
+                // (do_exit entry still runs as the task). Feeds the
+                // MCR hook's recycle bump. Remove with CRASHOBJ.
+                if nm == "DOEXIT" {
+                    mem.registra_mm_morto(mem.mm_atual());
+                }
             }
         });
     }
-    // TEMP (signal-send watch 0xC0026AB8/0xC0052610): __do_user_fault
+    // TEMP (heap-corruption catch v3): janela estreita (583000+,
+    // ~415 insns pos-schedule ate a morte) + caps 60: MALLOC
+    // (r0=size, r14=quem chama) + CHK2/7f0 (r2/r3/r4 = chunk)
+    // + F36. CHK1/7da provado inocente (fail-filtered, silent).
+    // Remove with CRASHOBJ.
+    for (va, nm, modo) in [
+        (0xAFE0_A750u32, "MALLOC", 0u32),
+        (0xAFE0_A7DAu32, "CHK1", 1u32),
+        (0xAFE0_A7F0u32, "CHK2", 2u32),
+        (0xAFE0_EF36u32, "F36", 3u32),
+    ] {
+        cpu.trap_pc_mem(va, move |mem, regs| {
+            static mut N: u32 = 0;
+            unsafe {
+                if N >= 60 {
+                    return;
+                }
+                if mem.mm_atual() != 0x1623_8000 {
+                    return;
+                }
+                if modo == 1 && regs[0] == regs[3] {
+                    return;
+                }
+                let f = FATIA_ATUAL;
+                // MALLOC/CHK2 passam toda hora: janela anti-ruido.
+                // CHK1 (filtrado por falha) e F36 (raro) sem janela.
+                if (modo == 0 || modo == 2) && !(583_000..583_100).contains(&f) {
+                    return;
+                }
+                N += 1;
+                let n = N;
+                let mut c2 = [0u8; 32];
+                let mut c3 = [0u8; 32];
+                let ok2 = mem.read(regs[2], 32).map(|s| c2.copy_from_slice(s)).is_ok();
+                let ok3 = mem.read(regs[3], 32).map(|s| c3.copy_from_slice(s)).is_ok();
+                eprintln!("{nm}#{n} f={f} r0={:#x} r1={:#x} r2={:#x} r3={:#x} r4={:#x} r14={:#x} sp={:#x} ok={ok2}/{ok3} c2={c2:02x?} c3={c3:02x?}", regs[0], regs[1], regs[2], regs[3], regs[4], regs[14], regs[13]);
+            }
+        });
+    }
+    // TEMP (linker entry stack): o linker pos-exec morre em NULL
+    // (str [r7], r7=NULL+0xa0). Dumpar sp/argc/argv/envp/auxv na
+    // entrada (0xB0000100, ARM) diz se OUR exec-setup entrega
+    // auxv quebrado. Cap 4. Remove with CRASHOBJ.
+    cpu.trap_pc_mem(0xB000_0100, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 4 {
+                N += 1;
+                let n = N;
+                let f = FATIA_ATUAL;
+                let mut sw = [0u32; 16];
+                for (i, s) in sw.iter_mut().enumerate() {
+                    *s = mem.read_u32(regs[13].wrapping_add((i as u32) * 4)).unwrap_or(0xDEADDEAD);
+                }
+                eprintln!("LDENTRY#{n} f={f} sp={:#x} mm={:#x} stk={sw:#08x?}", regs[13], mem.mm_atual());
+            }
+        }
+    });
+    // TEMP (pending bits): de onde vem o SEGV sem falta (forca
+    // em task+36 no get_signal_to_deliver (0xC004A354: ldr r6,
+    // [r4,#36])) — loga task + pending + signo. Diz se e stale.
+    // Cap 10. Remove with CRASHOBJ.
+    cpu.trap_pc_mem(0xC004_A354, move |mem, regs| {
+        static mut N: u32 = 0;
+        unsafe {
+            if N < 10 {
+                N += 1;
+                let n = N;
+                let t = regs[4];
+                let p36 = mem.read_u32(t.wrapping_add(36)).unwrap_or(0xDEADDEAD);
+                let f = FATIA_ATUAL;
+                eprintln!("PEND#{n} f={f} task={t:#x} p36={p36:#x}");
+            }
+        }
+    });
     // (addr+fsr+sig+code) and force_sig_info (signr) — the stack
     // fault's handler installs nothing, yet no SIGSEGV/exit/panic
     // fires; do_signal runs and returns via no_work_pending. Name
@@ -3694,9 +3774,13 @@ pub static mut TTBR_TASK: u32 = 0;
     cpu.trap_pc_mem(0xC005_2610, move |mem, regs| {
         static mut N: u32 = 0;
         unsafe {
-            if N < 4 {
+            // Cap 100 (era 4): restart mata 4+ com SIGKILL antes do
+            // SEGV do filho (585443) — com 4 o envio some. CORRECAO:
+            // signr e r0 (force_sig_info(sig,info,task)); r1 e o
+            // info-ptr (lixo). Remove with CRASHOBJ.
+            if N < 100 {
                 N += 1;
-                eprintln!("SENDSIG f={} sig={} task={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[1], mem.read_u32((regs[13] & !0x1FFF).wrapping_add(12)).unwrap_or(0xDEAD), regs[14]);
+                eprintln!("SENDSIG f={} sig={} task={:#x} lr={:#x}", unsafe { FATIA_ATUAL }, regs[0], mem.read_u32((regs[13] & !0x1FFF).wrapping_add(12)).unwrap_or(0xDEAD), regs[14]);
             }
         }
     });
@@ -6850,6 +6934,14 @@ pub static mut TTBR_TASK: u32 = 0;
                     mem.trocar_mm(foto.mm_atual);
                     mem.fixa_gens(foto.gens.clone());
                     mem.arma_vigia(foto.vigia);
+                    // TEMP (death-anchored epochs): pre-load deaths are
+                    // invisible to the FATAL# trap (it only sees in-run
+                    // do_exit). The parent zygote (mm 0x16238000) dies
+                    // deterministically at f=583005 every boot, before
+                    // any snapshot used here — pre-seed it so the
+                    // recycle bump fires for init's fork child.
+                    // Remove with CRASHOBJ.
+                    mem.registra_mm_morto(0x1623_8000);
                 }
                 unsafe {
                     TTBR_CACHE = foto.ttbr_cache;
@@ -8527,6 +8619,136 @@ pub static mut TTBR_TASK: u32 = 0;
                                 }
                             }
                         }
+                        // TEMP (v10 viveiro): the RuntimeInit argv String[]
+                        // (frame slot [0x4104af38], v10 of the 0x41aa7afa
+                        // method) holds the wild 0xe4280000 from an invoke
+                        // arg-push over-read (proven: MTERP slot bytes and
+                        // MISSARG v10 agree; the array-length then reads 0,
+                        // which EQUALS the expected count, so the guest logs
+                        // "Missing classname" spuriously and aborts at
+                        // 0xdeadd00d). Snapshot forensics (temp_caca_v10)
+                        // found NO live String[] in either mm (child: 1
+                        // bogus 1-elem; parent: 1 bogus), so the host
+                        // fabricates argv in this same zero page
+                        // (scratch at +0x100, past the [+8] word the
+                        // in-flight retry reads as 0) and restores the
+                        // slot. Later IGETs reload r0 from the slot and see
+                        // the real length. POISON-GATED, NOT one-shot: a
+                        // refire with a fixed slot is a silent no-op, and
+                        // every fresh zygote fork reproduces the poison
+                        // (same over-read) and needs its own restore.
+                        // Real fix: the over-reading invoke. Remove with
+                        // CRASHOBJ.
+                        static mut NVIV: u32 = 0;
+                        unsafe {
+                            if tolerado {
+                                NVIV += 1;
+                                const SLOT_V10: u32 = 0x4104af38;
+                                const VENENO: u32 = 0xe4280000;
+                                const RASO: u32 = 0xe4280100;
+                                const OBJ_STR: u32 = 0xe4280200;
+                                const VETOR_CH: u32 = 0xe4280300;
+                                let slot_agora = cpu.read_u32(SLOT_V10).unwrap_or(0xFFFF_FFFF);
+                                // Guarda extra: so restaura se a pagina
+                                // tolerada continua zerada ([+8]==0). Se o
+                                // guest mapeou algo real em 0xe4280000, o
+                                // slot pode ser legitimo — nao tocar.
+                                let pagina_zero = cpu.read_u32(VENENO + 8).unwrap_or(0xDEAD_DEAD) == 0;
+                                if slot_agora == VENENO && pagina_zero {
+                                    let f = FATIA_ATUAL;
+                                    // Layout String calibrado ao vivo
+                                    // (temp_charvec, 3/3): {clazz+0, 1@+4,
+                                    // array@+8, hash@+12, offset@+16=0,
+                                    // count@+20=len}. O +16=array antigo
+                                    // estava errado (offset=0 dava
+                                    // "obj-ok-noarray@0x0" nos probes);
+                                    // count=0 esvaziava a classname e
+                                    // clazz=0 estourava ArrayStoreException
+                                    // no arraycopy/aput. Clazzes reais do
+                                    // snap583 (temp_caca_clazz), verificadas
+                                    // ao vivo pelo descritor.
+                                    let mut cab = [0u8; 24];
+                                    let mut de_onde = "zeros";
+                                    let verifica = |cpu: &mut crate::cpu::dual::DualBackend, cl: u32, esp: &[u8]| -> bool {
+                                        let mut wb = [0u8; 4];
+                                        if cpu.memoria().read(cl + 24, 4).map(|s| wb.copy_from_slice(s)).is_err() {
+                                            return false;
+                                        }
+                                        let pd = u32::from_le_bytes(wb);
+                                        let mut hb = [0u8; 8];
+                                        if cpu.memoria().read(pd, 8).map(|s| hb.copy_from_slice(s)).is_err() {
+                                            return false;
+                                        }
+                                        &hb == esp
+                                    };
+                                    let ok_str = verifica(&mut cpu, 0x4000d5b0, b"Ljava/la");
+                                    let ok_arr = verifica(&mut cpu, 0x4107ea48, b"[Ljava/l");
+                                    let clazz_str: u32 = if ok_str { 0x4000d5b0 } else { 0 };
+                                    let clazz_arr: u32 = if ok_arr { 0x4107ea48 } else { 0 };
+                                    de_onde = if ok_str && ok_arr { "viveiro" } else if ok_str || ok_arr { "parcial" } else { "zeros" };
+                                    // Header-modelo: [clazz,1,0,0,0,0]; o
+                                    // array ptr e o count vao por string.
+                                    cab[0..4].copy_from_slice(&clazz_str.to_le_bytes());
+                                    cab[4..8].copy_from_slice(&1u32.to_le_bytes());
+                                    // argv Donut de 7 (ordem do startSystemServer):
+                                    // o arraycopy (INVOKE#1, r4=0x41aa7b5e em
+                                    // zygoteInit) copia 7 e estoura com len
+                                    // 1 ou 2 (AIOOBE nativo, sem <init> leaf;
+                                    // supers via INVOKE#2-4, fill #5, captura
+                                    // com 5 pares e shutdown). len<7 da o
+                                    // mesmo muro identico (196==195 ins a
+                                    // ins); len 7 deve passar a copia e
+                                    // chegar ao invokeStaticMain.
+                                    let nomes = [
+                                        "--setuid=1000",
+                                        "--setgid=1000",
+                                        "--setgroups=1001,1002,1003,1004,1005,1006,1007,1008,1009,1010,3001,3002,3003",
+                                        "--capabilities=34,30",
+                                        "--runtime-init",
+                                        "--nice-name=system_server",
+                                        "com.android.server.SystemServer",
+                                    ];
+                                    // (dex-confirmed a classe em 0x41bc5f76.)
+                                    let mut ok_w = true;
+                                    {
+                                        let mut mb = cpu.memoria_mut();
+                                        // Array de 7 em RASO (clazz real).
+                                        ok_w &= mb.write_u32(RASO, clazz_arr).is_ok();
+                                        ok_w &= mb.write_u32(RASO + 4, 0).is_ok();
+                                        ok_w &= mb.write_u32(RASO + 8, nomes.len() as u32).is_ok();
+                                        // Sete Strings + sete vetores: par k em
+                                        // +0x200+0x200k (obj) / +0x300+0x200k
+                                        // (vetor); cabe no zero page (ultimo
+                                        // vetor em 0xF00, setgroups ~200 B).
+                                        // String: [clazz,+4=1,array@+8,
+                                        // hash@+12=0,offset@+16=0,count@+20].
+                                        for (k, nome) in nomes.iter().enumerate() {
+                                            let obj = OBJ_STR + (k as u32) * 0x200;
+                                            let vet = VETOR_CH + (k as u32) * 0x200;
+                                            let utf16: Vec<u16> = nome.encode_utf16().collect();
+                                            ok_w &= mb.write_u32(RASO + 12 + (k as u32) * 4, obj).is_ok();
+                                            ok_w &= mb.write(obj, &cab).is_ok();
+                                            ok_w &= mb.write_u32(obj + 8, vet).is_ok();
+                                            ok_w &= mb.write_u32(obj + 20, utf16.len() as u32).is_ok();
+                                            ok_w &= mb.write_u32(vet, 0).is_ok();
+                                            ok_w &= mb.write_u32(vet + 4, 0).is_ok();
+                                            ok_w &= mb.write_u32(vet + 8, utf16.len() as u32).is_ok();
+                                            let mut cb = Vec::with_capacity(utf16.len() * 2);
+                                            for u in &utf16 {
+                                                cb.extend_from_slice(&u.to_le_bytes());
+                                            }
+                                            ok_w &= mb.write(vet + 12, &cb).is_ok();
+                                        }
+                                        // Restaura o slot v10.
+                                        ok_w &= mb.write_u32(SLOT_V10, RASO).is_ok();
+                                    }
+                                    eprintln!("V10VIVEIRO f={f} ok={ok_w} modelo={de_onde} cls={clazz_str:#x}/{clazz_arr:#x} slot_agora={slot_agora:#x} argc=7");
+                                } else {
+                                    let f = FATIA_ATUAL;
+                                    eprintln!("V10VIVEIRO f={f} pula slot={slot_agora:#x}");
+                                }
+                            }
+                        }
                         if !tolerado {
                             parada = outra;
                             break;
@@ -9129,6 +9351,15 @@ pub static mut TTBR_TASK: u32 = 0;
         StopReason::Returned => {
             imprime_trace(&cpu, cpu.read_reg(crate::cpu::Reg::Pc), None, parada.motivo())
         }
+    }
+    // Final logcat drain: same mid-slice loss as the serial ring —
+    // a stop lands after the last per-slice collection, leaving the
+    // abort's own logger entries (stack-trace tail) unread in the
+    // ring. Forward-only from ULTIMO, so re-collection is safe.
+    // TEMP (bring-up forensics): fold into the per-slice path or
+    // drop when stops move past zygote. Remove with CRASHOBJ.
+    for linha in colhe_logcat(&mut cpu) {
+        eprintln!("{linha}");
     }
     // Final drain: a fault (or any non-Budget stop) lands mid-slice,
     // one instruction after a print (`bl 0x88001968` then `strh` faults

@@ -116,6 +116,13 @@ pub struct GuestMemory {
     /// Only the exec'ing mm goes stale; the parent's pages stay
     /// resolvable as same-pa siblings.
     gen_por_mm: HashMap<u32, u32>,
+    /// TEMP (death-anchored epochs, see `nova_epoca_mm`): mm values
+    /// observed at do_exit entry. A TTBR *write* to a recorded value
+    /// means buddy-recycle; the MCR hook consumes one record per
+    /// value with a text-epoch bump. Fed from the harness FATAL#
+    /// trap; pre-seeded at snapshot load (see there). NOT serialized
+    /// (run-local). Remove with CRASHOBJ.
+    mortos_mm: Vec<u32>,
     /// TEMP (write watchpoint for the zygote wild-pointer crash):
     /// when set, `interpretador::es_mem` logs every overlapping
     /// store with PC (cap 30). Armed by the harness on the
@@ -126,6 +133,23 @@ pub struct GuestMemory {
 impl GuestMemory {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Records a dead mm value (do_exit entry); consumed one-shot
+    /// per value by the MCR hook's recycle bump. Run-local.
+    pub fn registra_mm_morto(&mut self, mm: u32) {
+        if !self.mortos_mm.iter().any(|&m| m == mm) {
+            self.mortos_mm.push(mm);
+        }
+    }
+
+    /// Consumes one death record for `mm` (true = recycle → bump).
+    pub fn consome_mm_morto(&mut self, mm: u32) -> bool {
+        if self.mortos_mm.iter().any(|&m| m == mm) {
+            self.mortos_mm.retain(|&m| m != mm);
+            return true;
+        }
+        false
     }
 
     /// Maps a new region. Fails if it collides with an existing one.
@@ -567,6 +591,34 @@ impl GuestMemory {
         idx.sort_by_key(|&i| self.regions[i].base);
         self.ordem = idx;
         self.ultimo.set(None);
+    }
+
+    /// TEMP (epoch on TTBR-value recycle): a buddy-recycled page-table
+    /// page hands a new address space a previously-used TTBR value
+    /// (proven: init's fork child resumes under zygote's 0x16238000
+    /// and fetches zygote's stale text as its own). Drop this mm
+    /// value's executable NON-writable user regions outright (pristine
+    /// text re-serves correctly via sibling/file; heap/data/stack
+    /// (writable) stay: COW-shared bytes remain valid and writes land
+    /// by mm VALUE). NOTE: deliberately NO gen-bump — bumping orphans
+    /// these regions as irmao siblings globally (gen-gate fails), but
+    /// same-file text stays byte-identical and must remain shareable
+    /// (proven: linker .data served zeros after the bump orphaned
+    /// zygote's regions). Call once per recycle (caller gates on
+    /// death-anchored reuse). Returns dropped-region count.
+    /// Remove with CRASHOBJ.
+    pub fn nova_epoca_mm(&mut self, mm: u32) -> u32 {
+        let antes = self.regions.len();
+        self.regions.retain(|r| {
+            !(r.dono_mm == Some(mm) && r.executavel && !r.writable && r.base < 0xC000_0000)
+        });
+        let cortadas = (antes - self.regions.len()) as u32;
+        self.ordem.clear();
+        let mut idx: Vec<usize> = (0..self.regions.len()).collect();
+        idx.sort_by_key(|&i| self.regions[i].base);
+        self.ordem = idx;
+        self.ultimo.set(None);
+        cortadas
     }
 
     /// Whether code may be fetched at `addr`.

@@ -338,6 +338,197 @@ commit.
   tables do NOT decode with stock dex-layout assumptions (every
   hand-rolled parse desyncs) — treat static odex parsing as
   unreliable, prefer live-memory evidence (KFAULT/MTERP/POISONWR).
+  CORRECTION 2026-10-28: the kernel HAS drivers/android/binder.c
+  (125 strings in vmlinux; old full-boot logs show
+  `open("/dev/binder", O_RDWR)` + `mmap(128K)` succeeding) — the
+  earlier "entirely absent" was wrong (nothing was probing
+  ioctl(54), so traffic was invisible). Work is observe-first
+  (`BINDER#` snoop: BC_TRANSACTION target/code/sizes/interface
+  token + BR_* replies, with mm/task); run from snap584 in
+  flight.
+  BREAKTHROUGH 2026-10-28 (epoch fix WORKS): implemented
+  death-anchored text epochs (`nova_epoca_mm` + MORTOS record at
+  DOEXIT + consume at MCR TTBR-write; pre-seed [0x16238000] at
+  load). First run: EPOCH#1 fires at the child switch
+  (1147776125, cortadas=0 — gen-bump alone did it), and the child
+  NO LONGER executes foreign bytes: ABORT#1-14 trace it paging
+  through INIT'S REAL code (0xbe3c fork-ret → 0x9618 → 0xa220 →
+  0xc000 → 0xd088 → … → 0x1237c) with NO deaths in 584330-584600
+  (the 584338 group-kill VANISHED — init sees a healthy restart
+  and doesn't cull). IN FLIGHT: 584330→586000 watching for
+  execve/services. NOTE: cortadas=0 needs a look (predicate vs
+  region flags) — invisibility sufficed this time.
+  PIVOT 2026-10-28 (restart): parent death fully characterized
+  (deterministic abort-tail exit; arrival edge = kernel-497 →
+  `movs pc,lr` → kill-epilogue → `bx lr` → F36; body invisible
+  to every probe but proven by historico+lr; ancient malloc/abort
+  scene on stack). The BOOT-blocker is now the RESTART: init
+  group-kills stragglers (`kill(-28,9)`@584229, FATAL#2-6
+  @584233-338 incl. system_server) then forks ONCE
+  (`pc=0xbe38`@584323) but the child NEVER execves (zero
+  `r7=11` in any log) and dies by SEGV @585443 (FATAL#7,
+  task `0xc6231c00`, parent mm) with NO preceding abort and NO
+  signal-syscall killer (all kills enumerated: STOP/CONT@583001-3
+  + group-kills). SENDSIG cap raised 4→100 (group-kills burned
+  it before the SEGV). IN FLIGHT: snap584→585400+save
+  (snap5854x) for pre-death forensics, then death-watch to
+  585500. NEXT: name the SEGV sender (SENDSIG lr) + child state
+  (stack/pc at 585400), then WHY no exec (ENOENT on empty
+  /system? fault before exec?).
+  BREAKTHROUGH 2026-10-28 (EDGE36 historico): the abort body DID
+  run — the pc ring shows kernel `c0021a4c-7c` (ending in
+  `movs pc, lr` per desarma's own test vector!) then
+  `afe0d1fc/d200/d204` (ARM kill-wrapper epilogue: pop/nop/
+  `bxpl lr`) then F36. So `F32:BL kill` executed (lr=`0xafe0ef37`
+  → `bx lr` → Thumb F36 → `BL _exit` → `exit_group(1)`), but the
+  kill SVC never appears (SVCA 782/2000, ARM hooks proven working
+  by init's own kill at the same pc): the leading hypothesis is
+  OUR timer IRQ landing on the kill SVC with a +4-skipping return
+  (`movs pc,lr` resumes at `d1fc`, SVC never runs, no SIGABRT
+  sent) — the old "signal gap" mechanized. COROLLARY: body traps
+  (`ABT02/KILL1/KILL2`, even AND odd spellings) miss REAL passage
+  while `EXITB/F36` catch theirs — trap delivery has a hole for
+  this path (mode-switch? rapid-succession? under investigation,
+  NOT a control-flow fact). CHK1/7da fail-filtered+unwindowed
+  silent across 1400 slices ⟹ abort came via the 7f0-path, not
+  7da. NEXT: v3 narrow-window run (583000+, caps 60) to capture
+  MALLOC size/caller + CHK2 chunk regs at the fatal instant.
+  STRUCTURAL HYPOTHESIS 2026-10-28 (stale kernel regions): demand-
+  mapped kernel pages (slab task/mm/VMA structs) are never
+  invalidated on free/reuse, so late forensics may read stale
+  bytes (task comm/pid, VMA lists showing `///init` for recycled
+  slots, Dalvik frames frozen post-pop). Treat all kernel-struct
+  reads as generation-suspect; trust live-fault evidence + file-
+  backed serves. If true, the fix is region versioning (big);
+  short-term: prefer fresh-fault data. Current push: make init's
+  restart complete (fork observed, execve never — watch child via
+  widened SVCA; run 584→585500 in flight).
+  EXPERIMENT (in flight 2026-10-28, `V10VIVEIRO`): neither mm holds
+  a live `String[]` (`temp_caca_v10`: child 1 bogus 1-elem, parent
+  1 bogus — the fork-inherited args array was GC'd pre-save), so
+  the host fabricates a 1-elem array in the tolerated zero page
+  (`0xe4280100`: array, `0xe4280200`: String with header copied
+  from the one live `">"`, count inferred as the `==1` word,
+  `0xe4280300`: UTF-16 `com.android.server.SystemServer`) and
+  restores `[0x4104af38]` at the first `0xad00e3dc` fault,
+  poison-gated. Parent/child frame divergence proven: same VA
+  page `0x4104a000` holds `v10=0x419eacc0` (dex bytes, not an
+  array — a different invocation) in the parent vs `0xe4280000`
+  in the child. If the length gate passes but `argv[0]` use
+  faults, extend to more elements / real class pointers next.
+  VERDICT 2026-10-28 (runs 187-190): VIVEIRO LANDS. `MTERP#3`
+  reloads `r0=0xe4280100` from the restored slot, `Missing
+  classname` is GONE, the guest resolves `core.odex` classes
+  (`ABORT#2-9`, file-verified offsets) and invokes framework
+  methods (`INVOKE#2-6`). New wall: SILENT orderly shutdown —
+  `AndroidRuntime::start` tail logs `Shutting down VM`
+  (native caller proven by `LOGWR#1` writev rept: `mm=0x162d4000`,
+  tag `AndroidRuntime` at `0xad34b334`, string context in rodata
+  dump), then detach-with-frames aborts at `0xdeadd00d` as
+  before. No exception text, no `exit_group`, thread dump shows
+  main at `ZygoteInit.main:~487` with 9 live walker frames
+  (`0x4104aecc-0x4104aff0`, only 1 renders — stale-method
+  resolution, same disease as `WALKERFIX`). Open: whether
+  `SystemServer.main` ran+returned (early return? `len=1` vs
+  on-device 7 args?) or never entered; `INVOKE` method-naming
+  probe (run 192) decides.
+  DECIDED 2026-10-28 (snap583 dissection at fatia 581788 +
+  `temp_metodo_classe`): Dalvik layout calibrated live — Method
+  `{clazz@+0, name@+16, insns@+32}`, Class `{descriptor@+24}`.
+  All 9 walker frames are ZygoteInit/RuntimeInit code
+  (`main`+`handleSystemServerProcess` ∈ `ZygoteInit`,
+  `zygoteInit` ∈ `RuntimeInit`, `insns=0x41aa7a94`;
+  `arraycopy` ∈ `java.lang.System` native): the child sits inside
+  `RuntimeInit.zygoteInit` copying argv (`INVOKE#1`, `r4=0x41aa7b5e`)
+  and NEVER reaches `invokeStaticMain`/`SystemServer.main`.
+  `WALKERFIX` exonerated (`era=0x0`, guest-authentic zero).
+  `LOGWR#1` + 512 B native stack put the shutdown writev under
+  mterp/JNI frames with the `AndroidRuntime` tag — start() tail
+  while Java is live. Run 195 prints `CLA.MET` per invoke to find
+  what zygoteInit calls after the copy and where Java stops.
+  DECIDED 2026-10-28 (runs 195-198 + snap583): the constructed
+  exception is **`ArrayStoreException`** — leaf `<init>` Method*s
+  at `0x411c7dd8/0x411c7e08` with `insns=0x4150f204` (exactly
+  `INVOKE#2`'s `r4`; `temp_caca_leaf`). Direct `RuntimeException`
+  subclass ⇒ the `INVOKE#2-4` super-chain fits. Mechanism: the
+  guest stores into a typed array (arraycopy `INVOKE#1` or
+  aput-object in arg handling) and the viveiro's fabricated
+  objects fail the type check (`clazz=0`). String layout
+  calibrated 3/3 (`temp_charvec`): `{clazz+0, 1@+4, array@+8,
+  hash@+12, offset@+16=0, count@+20=len}` — the old `+16=array`
+  was wrong (offset=0 explains the probes' `obj-ok-noarray@0x0`;
+  the `">"` chase was a false positive, retired) and `count=0`
+  emptied the classname. Real clazzes from the snapshot
+  (`temp_caca_clazz`: String `0x4000d5b0`, String[]
+  `0x4107ea48`), live-verified by descriptor in the hook.
+  Run 199 carries the corrected fabrication (real clazzes,
+  `count@+20`, `+4=1`, argv-7).
+  VERDICT 2026-10-28 (run 199): BREAKTHROUGH. Both clazzes verify
+  live (`modelo=viveiro cls=0x4000d5b0/0x4107ea48`); the copy
+  passes; `INVOKE#2` is **`RuntimeInit.invokeStaticMain`** —
+  the parser proceeds; `BootClassLoader`/`VMClassLoader` look up
+  `SystemServer` (`services.odex` pages fault in, file-verified).
+  A `LinkageError`→`NoClassDefFoundError` hiccup (messageless
+  instances in the child heap; class with missing dep, exact
+  trigger TBD) does NOT stop the boot: execution continues into
+  real framework work (ICU regex `Pattern`/`Matcher`,
+  `libicui18n`/`libicuuc`/`libnativehelper` paging, 72 served
+  aborts) with NO shutdown/abort/FATAL — Budget stop at 582000
+  (`pc=0xad039088`), healthy. Snapshot lesson: post-wedge
+  snapshots pin wedge state (583+clazz-0 replayed the old doom;
+  584 re-saved from the fixed world). Run 585 in flight
+  (snap584 → 585000, +3000 slices) toward services/binder.
+  VERDICT 2026-10-28 (run 585): frontier reaches 585000, but
+  f=583005+ brings silent process deaths: `exit(1)` (task
+  `0xc6201000`), 4 siblings SIGKILLed (`0xc62ff000/400/800/c00`,
+  f=584233-238), system_server itself (`0xc626e800`,
+  f=584338, SIGKILL) — no logcat E/, no kmsg service lines, no
+  OOM. system_server never entered `SystemServer.main` (zero
+  services.odex INVOKEs in 735; last Java is a `StringBuilder`
+  loop). `services.odex` pages fault in (file-verified) but
+  never execute via the monitored path. Open: killer identity
+  (`kill` r7=37 added to EXITCAL; rerun 585b in flight), task
+  identities, and what system_server waited on (binder? the
+  `LinkageError` dependency?).
+  DECIDED 2026-10-28 (runs 585b–586 + forensics): init is the
+  killer (`kill(-28/-26/-43, SIGKILL)` from init text + forks
+  with `init.svc.*` on-stack, but **no execve ever** — restart
+  never completes). system_server was HEALTHY-progressing when
+  killed (class loading, regex/ICU, PathClassLoader, no abort).
+  Tombstones: `_01` opened but empty (debuggerd suicided:
+  `tid 37 not responding`); `_00` is stale (base image clean,
+  no OPEN logged — parse artifact or older). Determinism HOLDS
+  (save `break`s before the slice — no impurity; FATAL#1
+  reproduces without save). Root remains the parent abort
+  (`exit_group(1)`@583005, abort-shaped, message lost on all
+  avenues). VIVEIRO/WALKERFIX made fork-proof (poison-gated,
+  idempotent) for the restart. NEXT: (1) why no execve after
+  init's fork (child stuck pre-exec vs fork failed — watch fork
+  return + child fate); (2) parent abort cause (last-Java via
+  mm-tagged INVOKE, or fd/select silent return); (3) then
+  binder (`/dev/binder` still absent).
+  DECIDED 2026-10-28 (abort-tail traps + libdvm addr2line +
+  Dalvik frame forensics): the parent death is a **heap-corruption
+  abort**: `Log.println_native` (JNI, `android/util/Log`
+  Method* `0x4107fd40`) → `dvmCreateCstrFromString` → `malloc`
+  (`0xafe0a750`) → dlmalloc unlink check fails (`7d8:cmp
+  r0,r3; 7da:bne abort`) → `abort@0xafe0eeb0` → `exit_group(1)`
+  at f=583005. Deterministic across 3+ runs (same f, sp,
+  stack). The raise never runs (no parent kill/tkill in EXITCAL;
+  body traps `ABT02/KILL1/KILL2` silent in BOTH parities while
+  `EXITB@0xafe0ef38` fires — control reaches abort's `_exit`
+  tail without executing its body; mechanism open: ARM-mode
+  arrival vs instrumentation parity — see code comment).
+  `r7=0xafe3892c` residue at EXITB. Pre-death window: ptrace(26)
+  +write/writev loop f=582900-979 (debuggerd dumping a victim →
+  tombstone_01, then `tid 37 not responding` suicide), malloc-arena
+  brk/open/close f=582991-997, init `kill(28,STOP/CONT)` f=583001-3
+  (pid 28 = parent? then CONT resumes it into the fatal malloc).
+  NEXT: (1) catch the corrupt chunk live (CHK1/CHK2/MALLOC traps
+  in flight — chunk addrs + bytes name the smasher: zeros? ASCII?
+  stale?); (2) if chunk bytes are serve-garbage (not guest
+  writes), audit GuestMemory alias/serve path; (3) init restart
+  still never execves (separate).
 
 ## IRQ completion (Dream, open — live evidence 2026-10-23)
 

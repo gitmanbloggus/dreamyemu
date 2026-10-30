@@ -765,6 +765,32 @@ impl GuestMemory {
         achou.and_then(|i| self.regions.get_mut(i))
     }
 
+    /// Reads `buf.len()` bytes at `addr` as address space `mm` sees them,
+    /// whatever mm is current. The host presenter needs this: the Linux
+    /// fb is a user mmap (per-mm 4 KiB regions), and at the moment the
+    /// frame loop samples it the CPU is usually in another task, so a
+    /// plain `read` misses (proven live: recovery's fb at 0x40009000,
+    /// mm 0x16270000, `FBDUMP ... unmapped` on every heartbeat). Region
+    /// by region, linear scan: bypasses the MRU/binary index, both keyed
+    /// on the current mm.
+    pub fn le_no_mm(&self, mm: u32, addr: u32, buf: &mut [u8]) -> Result<(), MemError> {
+        let ger = self.gen_de(mm);
+        let mut feito = 0usize;
+        while feito < buf.len() {
+            let a = addr.wrapping_add(feito as u32);
+            let r = self
+                .regions
+                .iter()
+                .find(|r| r.contains(a, 1) && Self::visivel(r, mm, ger))
+                .ok_or(MemError::Unmapped { addr: a, len: (buf.len() - feito) as u32 })?;
+            let ini = (a - r.base) as usize;
+            let n = (r.bytes.len() - ini).min(buf.len() - feito);
+            buf[feito..feito + n].copy_from_slice(&r.bytes[ini..ini + n]);
+            feito += n;
+        }
+        Ok(())
+    }
+
     pub fn read(&self, addr: u32, len: u32) -> Result<&[u8], MemError> {
         let region = match self.region_for(addr, len) {
             Some(r) => r,

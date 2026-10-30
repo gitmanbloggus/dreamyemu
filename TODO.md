@@ -290,21 +290,26 @@ commit.
 - **CRT of the fork — OPEN.** Crate/binary renames (`zeebx` → fork name),
   README, `.info` files, updater key: currently all inherited, all TBD in
   one rename commit when installers exist.
-- **Device-accurate boot.img + recovery.img — OPEN.** `nand_bringup.img`
-  carries the normal-Android ramdisk and only a *stub* recovery header
-  (`ferramentas/nand_conteudo.py`: `ANDROID!`, 1-page kernel, no payload;
-  `nand_linux.py` overwrites the recovery blocks with boot.img). So
-  Power+Home (recovery combo, verified live) jumps at a stub, and the
-  framebuffer can only be tested through the full zygote→system_server
-  path. Build: (1) a device-accurate `boot.img` (DREAIMG-NBH kernel +
-  ramdisk, verified against the SPL `ANDROID!`/size checks at
-  `0x88073CDC`); (2) a true `recovery.img` ramdisk (`/sbin/recovery` +
-  minui) patched at NAND `0x502C0000`+ (guest blocks, `bloco =
-  0x126+(src-0x500C0000)/0x20000`), so recovery boots headless and
-  exercises the `FBMAP` presenter without Dalvik. Keep both images
-  git-ignored (third-party blobs, like `tests/spl/*.img`); only the
-  builder script + derived constants (block numbers, load addrs
-  `0xA8100000`, `FBMAP` markers) live in the repo.
+- **Linux fb0 on screen via stock recovery — DONE 2026-10-30.** No
+  image had to be built: the RUU NBH already carries the stock
+  `recovery.img` at file `0x80300` (kernel byte-identical to boot's,
+  ramdisk `0x5A831` B with `/sbin/recovery` + `res/images`).
+  `ferramentas/nand_linux.py --recovery --misc-update` writes it over the
+  recovery blocks of `nand_bringup.img` and plants a `boot-recovery`
+  message (`--update_package=SDCARD:update.zip`) in MISC (`0x500C0000`,
+  pages 0+1). Measured: init at f≈220000, recovery mmaps fb0 (1 MiB,
+  two 75-page buffers at VA `0x40009000`/`0x40054000`, PA from
+  `0x03800000`, `FBMAP` f=233413/235830), FBIOGET_{F,V}SCREENINFO +
+  FBIOPUT pans, and at f=320000 buffer 0 holds the stock error screen
+  (triangle + phone, 10446 non-zero px, colors correct). Without the MISC
+  message this 1.0-era recovery draws nothing and reboots, so black is
+  correct there. The presenter now reads the fb through the drawing mm
+  (`GuestMemory::le_no_mm`), because the frame loop usually samples while
+  another task is current. Still OPEN: (1) the presenter always shows
+  buffer 0; it should follow the FBIOPUT `yoffset`; (2) input to
+  recovery (Home+Back reboot, Alt+L text) is untested; (3) the stock
+  `init` looks for `/initlogo.rle` but the ramdisk ships `logo.rle`, so
+  normal boot never opens fb0 before SurfaceFlinger.
 - **system_server init (Dream, in flight 2026-10-28).** Resume from
   `/tmp/opencode/snap570.bin` reaches `system_server process 37` and
   Audio init (`get_audpp_filter` + `AudioFilter.csv` ok). Three

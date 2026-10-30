@@ -399,10 +399,25 @@ impl Interpretador {
         }
         static mut NABT: u32 = 0;
         unsafe {
-            if NABT < 80 {
+            if NABT < 400 {
                 NABT += 1;
                 let n = NABT;
-                eprintln!("ABORT#{n} ins={} velho={velho:#x} pc={:#x} far={addr_falta:#x} fsr={fsr:#x} pre={prefetch}", self.instrucoes, self.r[15]);
+                eprintln!("ABORT#{n} ins={} velho={velho:#x} pc={:#x} far={addr_falta:#x} fsr={fsr:#x} pre={prefetch} mm={:#x}", self.instrucoes, self.r[15], self.mem.borrow().mm_atual());
+                // TEMP (child-fault path): historico no abort com
+                // mm do pai/filho (0x16238000) — de onde veio o pc
+                // selvagem (fork-return? ramo filho do init? salto
+                // louco?). Cap 4. Remove with CRASHOBJ.
+                if self.mem.borrow().mm_atual() == 0x1623_8000 {
+                    static mut NHF: u32 = 0;
+                    unsafe {
+                        if NHF < 4 {
+                            NHF += 1;
+                            let h = self.historico();
+                            let ini = h.len().saturating_sub(120);
+                            eprintln!("ABHIST f={} pcs={:08x?}", unsafe { crate::msm7201a::FATIA_ATUAL }, &h[ini..]);
+                        }
+                    }
+                }
             }
         }
         // ABT-bank SP fallback (same root cause as IRQ: reset leaves
@@ -543,7 +558,7 @@ impl Interpretador {
             // setCapabilities/capset failure. Remove with CRASHOBJ.
             static mut NSVCA: u32 = 0;
             let f = crate::msm7201a::FATIA_ATUAL;
-            if (579_000..582_500).contains(&f) && NSVCA < 400 {
+            if (579_000..586_500).contains(&f) && NSVCA < 2000 {
                 NSVCA += 1;
                 let n = NSVCA;
                 eprintln!("SVCA#{n} f={f} pc={:#x} r7={:#x} r0={:#x} r1={:#x} r2={:#x}", self.r[15], self.r[7], self.r[0], self.r[1], self.r[2]);
@@ -572,11 +587,17 @@ impl Interpretador {
                         let mut achou = false;
                         if self.r[7] == 4 {
                             if let Ok(s) = self.mem.borrow().read(self.r[1], 96) {
-                                achou = s.windows(17).any(|w| {
-                                    w == b"Missing classname"
-                                        || w == b"Error setting cap"
-                                        || w == b"Failure preloadin"
-                                });
+                                // contains(), not windows(N): needles have
+                                // mixed lengths (a 17-window can never match
+                                // a 16-byte needle — which is why the
+                                // "Shutting down VM" hunt stayed silent).
+                                let t = String::from_utf8_lossy(s);
+                                achou = t.contains("Missing classname")
+                                    || t.contains("Error setting cap")
+                                    || t.contains("Failure preloadin")
+                                    || t.contains("Shutting down VM")
+                                    || t.contains("Zygote died with")
+                                    || t.contains("FATAL EXCEPTION:");
                             }
                         } else {
                             // writev(fd, iov, iovcnt): scan first 4 chunks.
@@ -591,11 +612,14 @@ impl Interpretador {
                                     continue;
                                 }
                                 if let Ok(s) = self.mem.borrow().read(ptr, len.min(96)) {
-                                    if s.windows(17).any(|w| {
-                                        w == b"Missing classname"
-                                            || w == b"Error setting cap"
-                                            || w == b"Failure preloadin"
-                                    }) {
+                                    let t = String::from_utf8_lossy(s);
+                                    if t.contains("Missing classname")
+                                        || t.contains("Error setting cap")
+                                        || t.contains("Failure preloadin")
+                                        || t.contains("Shutting down VM")
+                                        || t.contains("Zygote died with")
+                                        || t.contains("FATAL EXCEPTION:")
+                                    {
                                         achou = true;
                                         break;
                                     }
@@ -625,9 +649,12 @@ impl Interpretador {
                                 }
                             }
                                                     // Native stack to name the caller chain
-                        // (liblog <- Log JNI <- dalvik bridge?).
-                        let mut nstk = [0u8; 128];
-                        let okn = self.mem.borrow().read(self.r[13], 128).map(|s| nstk.copy_from_slice(s)).is_ok();
+                        // (liblog <- Log JNI <- dalvik bridge?). 512 B: the
+                        // start()-tail shutdown runs ~6+ frames above the
+                        // writev and 128 B never reaches it. Remove with
+                        // CRASHOBJ.
+                        let mut nstk = [0u8; 512];
+                        let okn = self.mem.borrow().read(self.r[13], 512).map(|s| nstk.copy_from_slice(s)).is_ok();
                         eprintln!("LOGWR#{} {} f={} pc={:#x} lr={:#x} r7={:#x} r0={:#x} r1={:#x} r2={:#x} sp={:#x} mm={:#x} nok={okn} nstk={nstk:02x?}", unsafe { NLG }, tag, unsafe { crate::msm7201a::FATIA_ATUAL }, self.r[15], self.r[14], self.r[7], self.r[0], self.r[1], self.r[2], self.r[13], self.mem.borrow().mm_atual());
                         }
                     }
@@ -636,13 +663,15 @@ impl Interpretador {
         }
         // TEMP (exit-class watch): init dies via do_exit (no
         // segfault) — catch exit/exit_group (r7=1/248), execve
-        // (r7=11), fork/clone (r7=2/120) with args + task + lr + 
-        // execve path. A service child failing execve (empty
+        // (r7=11), fork/clone (r7=2/120), kill/tkill/tgkill
+        // (r7=37/238/241, r0=pid/tid, r1=sig — names the SIGKILL
+        // sender behind the 584233+ mass deaths) with args + task +
+        // lr + execve path. A service child failing execve (empty
         // /system!) exits 127 normally; init itself exiting is the
         // panic. Clone/fork presence separates the two stories.
         // Cap 40 (was 10): service execves/exits happen late
         // (f≈1.1B) and need headroom past early init.
-        if self.r[7] == 1 || self.r[7] == 248 || self.r[7] == 11 || self.r[7] == 2 || self.r[7] == 120 {
+        if self.r[7] == 1 || self.r[7] == 248 || self.r[7] == 11 || self.r[7] == 2 || self.r[7] == 120 || self.r[7] == 37 || self.r[7] == 238 || self.r[7] == 241 {
             static mut NEX: u32 = 0;
             unsafe {
                 if NEX < 40 {
@@ -678,11 +707,200 @@ impl Interpretador {
                             extra = format!(" path={:?}", String::from_utf8_lossy(&nm));
                         }
                     }
-                    eprintln!("EXITCAL f={} r7={:#x} r0={:#x} r1={:#x} task={task:#x} lr={:#x} pc={:#x} mode={:#x}{extra}", self.instrucoes, self.r[7], self.r[0], self.r[1], self.r[14], self.r[15], self.cpsr & 0x1F);
+                    // TEMP (exec-stack audit): the post-exec linker dies
+                    // on NULL+0xa0 (str to [r7], r7 derived from a NULL
+                    // solist) — dump the execve-time user stack
+                    // (argc/argv/envp words) to see if OUR exec setup
+                    // (or its serve) hands NULL. Cap 10. Remove with CRASHOBJ.
+                    if self.r[7] == 11 {
+                        static mut NXSTACK: u32 = 0;
+                        unsafe {
+                            if NXSTACK < 10 {
+                                NXSTACK += 1;
+                                let mut sw = [0u32; 12];
+                                for (i, s) in sw.iter_mut().enumerate() {
+                                    *s = self.mem.borrow().read_u32(self.r[13].wrapping_add((i as u32) * 4)).unwrap_or(0xDEADDEAD);
+                                }
+                                eprintln!("EXECSTK f={} sp={:#x} mm={:#x} stk={sw:#x?}", unsafe { crate::msm7201a::FATIA_ATUAL }, self.r[13], self.mem.borrow().mm_atual());
+                            }
+                        }
+                    }
+                    // Stack do chamador (quem chamou exit/abort/kill — o lr sozinho
+        // nao basta: o abort() da libc esconde o chamador real).
+        // 512 B como no LOGWR. Remove with CRASHOBJ.
+        let mut nstk = [0u8; 512];
+        let okn = self.mem.borrow().read(self.r[13], 512).map(|s| nstk.copy_from_slice(s)).is_ok();
+        eprintln!("EXITCAL f={} r7={:#x} r0={:#x} r1={:#x} task={task:#x} lr={:#x} pc={:#x} mode={:#x} mm={:#x} nok={okn} nstk={nstk:02x?}{extra}", self.instrucoes, self.r[7], self.r[0], self.r[1], self.r[14], self.r[15], self.cpsr & 0x1F, self.mem.borrow().mm_atual());
+                }
+            }
+        }
+        // TEMP (binder snoop): the kernel HAS drivers/android/binder.c
+        // (125 strings in vmlinux; open+mmap observed live), so the
+        // work is observe-first, not implement-first. Log ioctl(54)
+        // BINDER_WRITE_READ traffic read-only: BC_* out (target
+        // handle, code, sizes, interface token) + BR_* in (replies
+        // from the previous call, still in the buffer). Names who
+        // talks to whom (servicemanager? system_server?) and where
+        // it stalls. Cap 60. Remove with CRASHOBJ (or keep as the
+        // binder bring-up tap).
+        if self.r[7] == 54 {
+            static mut NBI: u32 = 0;
+            unsafe {
+                if NBI < 60 {
+                    NBI += 1;
+                    let n = NBI;
+                    let mb = self.mem.borrow();
+                    let r = self.r;
+                    let f = crate::msm7201a::FATIA_ATUAL;
+                    let mm = mb.mm_atual();
+                    let ti = r[13] & !0x1FFF;
+                    let task = mb.read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
+                    let fd = r[0];
+                    let cmd = r[1];
+                    let arg = r[2];
+                    // Decodifica WRITE_READ (0xC0186201) com parcimonia;
+                    // outros cmds so o numero.
+                    let mut det = String::new();
+                    if cmd == 0xC0186201 {
+                        let mut bw = [0u8; 24];
+                        if mb.read(arg, 24).map(|s| bw.copy_from_slice(s)).is_ok() {
+                            let wsz = u32::from_le_bytes([bw[0], bw[1], bw[2], bw[3]]) as usize;
+                            let wbuf = u32::from_le_bytes([bw[8], bw[9], bw[10], bw[11]]);
+                            let rsz = u32::from_le_bytes([bw[12], bw[13], bw[14], bw[15]]) as usize;
+                            let rbuf = u32::from_le_bytes([bw[20], bw[21], bw[22], bw[23]]);
+                            // Lado escrita: comandos BC_*.
+                            let mut wb = vec![0u8; wsz.min(512)];
+                            if !wb.is_empty() {
+                                if mb.read(wbuf, wb.len() as u32).map(|s| wb.copy_from_slice(s)).is_ok() {
+                                    let mut o = 0usize;
+                                    let mut nb = 0;
+                                    while o + 4 <= wb.len() && nb < 4 {
+                                        let c = u32::from_le_bytes([wb[o], wb[o+1], wb[o+2], wb[o+3]]);
+                                        o += 4;
+                                        let cn = match c {
+                                            0 => "TRANSACTION", 1 => "REPLY", 2 => "ACQUIRE_RESULT",
+                                            3 => "FREE_BUFFER", 4 => "INCREFS", 5 => "ACQUIRE",
+                                            6 => "RELEASE", 7 => "DECREFS", 8 => "INCREFS_DONE",
+                                            9 => "ACQUIRE_DONE", 10 => "ATTEMPT_ACQUIRE",
+                                            11 => "REGISTER_LOOPER", 12 => "ENTER_LOOPER",
+                                            13 => "EXIT_LOOPER", 14 => "REQUEST_DEATH",
+                                            15 => "CLEAR_DEATH", 16 => "DEAD_DONE",
+                                            _ => "?",
+                                        };
+                                        if c <= 1 && o + 44 <= wb.len() {
+                                            let tgt = u32::from_le_bytes([wb[o], wb[o+1], wb[o+2], wb[o+3]]);
+                                            let code = u32::from_le_bytes([wb[o+8], wb[o+9], wb[o+10], wb[o+11]]);
+                                            let ds = u32::from_le_bytes([wb[o+24], wb[o+25], wb[o+26], wb[o+27]]);
+                                            let os = u32::from_le_bytes([wb[o+28], wb[o+29], wb[o+30], wb[o+31]]);
+                                            let pb = u32::from_le_bytes([wb[o+32], wb[o+33], wb[o+34], wb[o+35]]);
+                                            // InterfaceToken: primeira string UTF-16 do payload.
+                                            let mut itf = String::new();
+                                            let mut tb = [0u8; 64];
+                                            if mb.read(pb, 64).map(|s| tb.copy_from_slice(s)).is_ok() {
+                                                let nch = u32::from_le_bytes([tb[0], tb[1], tb[2], tb[3]]) as usize;
+                                                if nch > 0 && nch < 16 {
+                                                    for k in 0..nch {
+                                                        let ch = u16::from_le_bytes([tb[4+k*2], tb[5+k*2]]);
+                                                        if ch == 0 || ch > 0x7e {
+                                                            break;
+                                                        }
+                                                        itf.push(ch as u8 as char);
+                                                    }
+                                                }
+                                            }
+                                            det.push_str(&format!(" BC{c}={cn}->h{tgt:#x} code{code} ds{ds} os{os} [{itf}];"));
+                                            o += 44 + ds as usize + os as usize;
+                                        } else {
+                                            det.push_str(&format!(" BC{c}={cn};"));
+                                            // Payloads pequenos: pula com conservadorismo
+                                            // (FREE_BUFFER=ptr, ref ops=handle+...).
+                                            if c == 3 {
+                                                o += 4;
+                                            } else if (4..=7).contains(&c) || c == 14 || c == 15 {
+                                                o += 8;
+                                            }
+                                        }
+                                        nb += 1;
+                                    }
+                                }
+                            }
+                            // Lado leitura: respostas BR_* da chamada anterior.
+                            let mut rb = vec![0u8; rsz.min(256)];
+                            if !rb.is_empty() {
+                                if mb.read(rbuf, rb.len() as u32).map(|s| rb.copy_from_slice(s)).is_ok() {
+                                    let mut o = 0usize;
+                                    let mut nb = 0;
+                                    while o + 4 <= rb.len() && nb < 4 {
+                                        let c = u32::from_le_bytes([rb[o], rb[o+1], rb[o+2], rb[o+3]]);
+                                        o += 4;
+                                        let cn = match c {
+                                            0 => "ERROR", 1 => "OK", 2 => "TRANSACTION", 3 => "REPLY",
+                                            4 => "ACQUIRE_RESULT", 5 => "DEAD_REPLY", 6 => "TRAN_COMPLETE",
+                                            7 => "INCREFS", 8 => "ACQUIRE", 9 => "RELEASE",
+                                            10 => "DECREFS", 11 => "ATTEMPT_ACQUIRE", 12 => "NOOP",
+                                            13 => "SPAWN_LOOPER", 14 => "FINISHED", 15 => "DEAD_BINDER",
+                                            16 => "CLEAR_DEATH_DONE", 17 => "FAILED_REPLY",
+                                            _ => "?",
+                                        };
+                                        if c == 2 || c == 3 {
+                                            if o + 44 <= rb.len() {
+                                                let tgt = u32::from_le_bytes([rb[o], rb[o+1], rb[o+2], rb[o+3]]);
+                                                let code = u32::from_le_bytes([rb[o+8], rb[o+9], rb[o+10], rb[o+11]]);
+                                                let ds = u32::from_le_bytes([rb[o+24], rb[o+25], rb[o+26], rb[o+27]]);
+                                                let os = u32::from_le_bytes([rb[o+28], rb[o+29], rb[o+30], rb[o+31]]);
+                                                det.push_str(&format!(" BR{c}={cn} h{tgt:#x} code{code} ds{ds} os{os};"));
+                                                o += 44 + ds as usize + os as usize;
+                                            } else {
+                                                det.push_str(&format!(" BR{c}={cn}(trunc);"));
+                                                break;
+                                            }
+                                        } else {
+                                            det.push_str(&format!(" BR{c}={cn};"));
+                                            if c == 0 || c == 4 {
+                                                o += 4;
+                                            }
+                                        }
+                                        nb += 1;
+                                    }
+                                }
+                            }
+                            det = format!(" WR wsz{wsz} rsz{rsz}{det}");
+                        }
+                    }
+                    eprintln!("BINDER#{n} f={f} mm={mm:#x} task={task:#x} fd={fd} cmd={cmd:#x}{det}");
                 }
             }
         }
         // TEMP (block watch): where userspace parks when the boot
+        // goes quiet — futex (240), nanosleep (162), poll (168),
+        // select (142), epoll_wait (287), wait4 (114). Gated to
+        // late boot (the stuck state forms past ~1.5B instrs; early
+        // boot would burn any cap on linker futexes). Cap 30/type.
+        // Remove once the zygote stall is named.
+        // goes quiet — futex (240), nanosleep (162), poll (168),
+        // select (142), epoll_wait (287), wait4 (114). Gated to
+        // late boot (the stuck state forms past ~1.5B instrs; early
+        // boot would burn any cap on linker futexes). Cap 30/type.
+        // Remove once the zygote stall is named.
+        // TEMP (stderr watch): captura escritas no fd 2 (stderr) na
+        // janela do abort (583005) — a mensagem do assert/LOG_FATAL
+        // morre no stub e o abort() fica mudo. r7==4 (write) com
+        // r0==2, despeja 128 B; cap 10, janela 582900-583100.
+        // Remove with CRASHOBJ.
+        if self.r[7] == 4 && self.r[0] == 2 {
+            static mut NER: u32 = 0;
+            unsafe {
+                let f = crate::msm7201a::FATIA_ATUAL;
+                if (582_900..583_100).contains(&f) && NER < 10 {
+                    NER += 1;
+                    let n = NER;
+                    let mut eb = [0u8; 128];
+                    let oke = self.mem.borrow().read(self.r[1], 128).map(|s| eb.copy_from_slice(s)).is_ok();
+                    let txt = String::from_utf8_lossy(&eb);
+                    eprintln!("STDERR#{n} f={f} pc={:#x} lr={:#x} mm={:#x} ok={oke} msg={txt:?}", self.r[15], self.r[14], self.mem.borrow().mm_atual());
+                }
+            }
+        }
         // goes quiet — futex (240), nanosleep (162), poll (168),
         // select (142), epoll_wait (287), wait4 (114). Gated to
         // late boot (the stuck state forms past ~1.5B instrs; early
@@ -936,7 +1154,9 @@ impl Interpretador {
                 if NCL2 < 80 && ((562_000_000..563_500_000).contains(&f) || f >= 656_300_000) {
                     NCL2 += 1;
                     let n = NCL2;
-                    eprintln!("CLOSE2#{n} f={f} fd={:#x}", self.r[0]);
+                    let ti = self.r[13] & !0x1FFF;
+                    let task = self.mem.borrow().read_u32(ti.wrapping_add(12)).unwrap_or(0xDEAD);
+                    eprintln!("CLOSE2#{n} f={f} fd={:#x} mm={:#x} task={task:#x} lr={:#x} pc={:#x}", self.r[0], self.mem.borrow().mm_atual(), self.r[14], self.r[15]);
                 }
             }
         }
@@ -2445,17 +2665,65 @@ impl Interpretador {
             // the parent's pages).
             if chave == 0x100 {
                 // TEMP (mm audit): confirm TTBR writes actually flow
-                // and see the pgd values (cap 8 — switches are rare
-                // after boot settles).
+                // and see the pgd values (cap 400 — switches continue
+                // late (init restarts, zygote forks); cap 8 blinded
+                // the 584233+ deaths.
                 static mut NM: u32 = 0;
                 unsafe {
-                    if NM < 8 {
+                    if NM < 400 {
                         NM += 1;
                         let n = NM;
                         eprintln!("MM#{n} ins={} ttbr={valor:#x}", self.instrucoes);
                     }
                 }
+                // TEMP (ttbr-verify): cross-check the written TTBR
+                // against task->mm->pgd (guest truth: task+0x1B0=mm,
+                // mm+0x24=pgd kva, TTBR=pgd-0xB0000000). A mismatch
+                // names WHO lies (guest wrote stale vs OUR hook
+                // misread) — the fork child (MM#17=16238000) is the
+                // suspect. Cap 40, user TTBRs only. Remove with CRASHOBJ.
+                unsafe {
+                    static mut NTV: u32 = 0;
+                    if NTV < 40 {
+                        let ti = self.r[13] & !0x1FFF;
+                        if let Ok(task) = self.mem.borrow().read_u32(ti.wrapping_add(12)) {
+                            if (0xC600_0000..0xC700_0000).contains(&task) {
+                                if let Ok(mm) = self.mem.borrow().read_u32(task.wrapping_add(0x1B0)) {
+                                    if (0xC600_0000..0xD000_0000).contains(&mm) {
+                                        if let Ok(pgd) = self.mem.borrow().read_u32(mm.wrapping_add(0x24)) {
+                                            let espera = pgd.wrapping_sub(0xB000_0000);
+                                            let tem = valor & 0xFFFF_C000;
+                                            if espera != tem && (0x1600_0000..0x1700_0000).contains(&espera) && (0x1600_0000..0x1700_0000).contains(&tem) {
+                                                NTV += 1;
+                                                let n = NTV;
+                                                eprintln!("TTBRVRF#{n} ins={} tem={tem:#x} espera={espera:#x} task={task:#x} mm={mm:#x} pgd={pgd:#x} pc={:#x} r0={:#x} r1={:#x} r2={:#x} r3={:#x} r4={:#x}", self.instrucoes, self.r[15], self.r[0], self.r[1], self.r[2], self.r[3], self.r[4]);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 self.mem.borrow_mut().trocar_mm(valor & 0xFFFF_C000);
+                // TEMP (death-anchored epochs): a TTBR write to a
+                // recorded-dead value means buddy-recycle (fresh page
+                // tables under a stale TTBR value → stale regions
+                // fetchable with no fault). Consume one record with a
+                // text-epoch bump (text re-serves correctly; heap/data
+                // stay). Cap logs 20. Remove with CRASHOBJ.
+                unsafe {
+                    static mut NEP: u32 = 0;
+                    let vv = valor & 0xFFFF_C000;
+                    if self.mem.borrow_mut().consome_mm_morto(vv) {
+                        let cort = self.mem.borrow_mut().nova_epoca_mm(vv);
+                        if NEP < 20 {
+                            NEP += 1;
+                            let n = NEP;
+                            eprintln!("EPOCH#{n} ins={} mm={vv:#x} cortadas={cort} pc={:#x}", self.instrucoes, self.r[15]);
+                        }
+                    }
+                }
             }
             Ok(false)
         } else {
@@ -3450,6 +3718,21 @@ impl CpuBackend for Interpretador {
                 }
             }
             self.historico[self.hist_pos] = self.r[15];
+            // TEMP (F36 arrival edge): the parent reaches abort-tail
+            // F36 with no body passage and no SVC — dump regs + last
+            // 65 pcs (oldest first) to name the edge: kernel resume?
+            // fallthrough? wild branch? Cap 2. Remove with CRASHOBJ.
+            if self.r[15] == 0xAFE0_EF36 {
+                static mut NH36: u32 = 0;
+                unsafe {
+                    if NH36 < 2 {
+                        NH36 += 1;
+                        let h = self.historico();
+                        let ini = h.len().saturating_sub(500);
+                        eprintln!("EDGE36 f={} ins={} n={} r0={:#x} r1={:#x} r4={:#x} r7={:#x} r14={:#x} sp={:#x} mm={:#x} hist={:08x?}", unsafe { crate::msm7201a::FATIA_ATUAL }, self.instrucoes, h.len(), self.r[0], self.r[1], self.r[4], self.r[7], self.r[14], self.r[13], self.mem.borrow().mm_atual(), &h[ini..]);
+                    }
+                }
+            }
             // TEMP (system_server crash forensics): pc 0x11020 was heap
             // trash via a bad prctl GOT (fixed); pc 0xad0519e4 faults
             // on 0x388f3095 during Audio init; pc 0xad038700/0xad038796
@@ -3638,19 +3921,77 @@ impl CpuBackend for Interpretador {
                             if NZ < 1 {
                                 NZ += 1;
                                 let mut mbw = self.mem.borrow_mut();
-                                let _ = mbw.write_u32(0x4104af6c, 0);
-                                eprintln!("WALKERFIX ins={} zerado [0x4104af6c]", self.instrucoes);
+                                // TEMP (WALKERFIX friendly-fire audit): log
+                                // the OLD value before zeroing. The zero was
+                                // proven for the Audio-era stale node, but
+                                // [0x4104af6c] now sits at fp+8 of the LIVE
+                                // zygoteInit frame 0x4104af64 (visited 50
+                                // ins later with a zeroed +8 and no
+                                // FRAMEMETH#5 hit) — a mid-stack word is
+                                // live by construction. If the old value is
+                                // live, the zero derails the run into the
+                                // silent shutdown and must be gated off.
+                                // Remove with CRASHOBJ.
+                                let mut vb = [0u8; 4];
+                                let old = mbw.read(0x4104af6c, 4).map(|s| {
+                                    vb.copy_from_slice(s);
+                                    u32::from_le_bytes(vb)
+                                }).unwrap_or(0xDEAD_DEAD);
+                                // Idempotente: so zera se sujo (cada fork
+                                // novo pode trazer o no podre de volta).
+                                if old != 0 {
+                                    let _ = mbw.write_u32(0x4104af6c, 0);
+                                }
+                                eprintln!("WALKERFIX ins={} zerado [0x4104af6c] era={old:#x}", self.instrucoes);
                             }
                         }
                     }
                     if self.r[15] == 0xad0126d4 {
                         // Hot path: one short line per invoke (cap 2000 for
-                        // fp/curFrame correlation). Remove with CRASHOBJ.
+                        // fp/curFrame correlation). Chase r0 as Method*
+                        // ([r0+16] = name ptr) to name the invoked Java
+                        // method — the shutdown-wall needs to know whether
+                        // SystemServer.main was ever entered. Best-effort
+                        // (unreadable -> "?"); layout proven by the MTERP
+                        // name chase. Remove with CRASHOBJ.
                         if JI < 2000 {
                             JI += 1;
                             let ji = unsafe { JI };
+                            let mb = self.mem.borrow();
+                            // Calibre (temp_metodo_classe, snap583): Method
+                            // {clazz@+0, name@+16, insns@+32}, Class
+                            // {descriptor@+24}. Nomeia CLASSE.metodo.
+                            let mut mnome = String::from("?");
+                            let mut cla = String::from("?");
+                            let mut wmet = [0u8; 36];
+                            if mb.read(self.r[0], 36).map(|s| wmet.copy_from_slice(s)).is_ok() {
+                                let pa_nome = u32::from_le_bytes([wmet[16], wmet[17], wmet[18], wmet[19]]);
+                                let cl = u32::from_le_bytes([wmet[0], wmet[1], wmet[2], wmet[3]]);
+                                let mut mnb = [0u8; 64];
+                                if mb.read(pa_nome, 64).map(|s| mnb.copy_from_slice(s)).is_ok() {
+                                    let fim = mnb.iter().position(|&b| b == 0).unwrap_or(64);
+                                    let t = String::from_utf8_lossy(&mnb[..fim]);
+                                    if !t.is_empty() && t.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                                        mnome = t.into_owned();
+                                    } else {
+                                        mnome = format!("noname@{pa_nome:#x}");
+                                    }
+                                }
+                                let mut wcl = [0u8; 32];
+                                if mb.read(cl, 32).map(|s| wcl.copy_from_slice(s)).is_ok() {
+                                    let pa_d = u32::from_le_bytes([wcl[24], wcl[25], wcl[26], wcl[27]]);
+                                    let mut dnb = [0u8; 72];
+                                    if mb.read(pa_d, 72).map(|s| dnb.copy_from_slice(s)).is_ok() {
+                                        let fim = dnb.iter().position(|&b| b == 0).unwrap_or(72);
+                                        let t = String::from_utf8_lossy(&dnb[..fim]);
+                                        if !t.is_empty() && t.len() < 70 && t.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                                            cla = t.into_owned();
+                                        }
+                                    }
+                                }
+                            }
                             eprintln!(
-                                "INVOKE#{} ins={} r0={:#x} r1={:#x} r2={:#x} r4={:#x} r5={:#x}",
+                                "INVOKE#{} ins={} r0={:#x} r1={:#x} r2={:#x} r4={:#x} r5={:#x} met={} cla={} mm={:#x}",
                                 ji,
                                 self.instrucoes,
                                 self.r[0],
@@ -3658,7 +3999,20 @@ impl CpuBackend for Interpretador {
                                 self.r[2],
                                 self.r[4],
                                 self.r[5],
+                                mnome,
+                                cla,
+                                mb.mm_atual(),
                             );
+                            // TEMP (this-hunt): despeja o frame do chamador
+                            // para achar `this` (o mesmo objeto em #2/#3/#4
+                            // = a excecao; sua clazz nomeia a subclasse
+                            // leaf). Remove with CRASHOBJ.
+                            {
+                                let mut wloc = [0u8; 64];
+                                if mb.read(self.r[5], 64).map(|s| wloc.copy_from_slice(s)).is_ok() {
+                                    eprintln!("INVKFR#{} r5={:#x} mm={:#x} loc={:02x?}", ji, self.r[5], mb.mm_atual(), wloc);
+                                }
+                            }
                         }
                     } else if self.r[15] == 0xad00e3dc {
                         // mterp OP_IGET wild r0 (new wall past Audio):
@@ -3757,6 +4111,57 @@ impl CpuBackend for Interpretador {
                         let mut w4 = [0u8; 16];
                         let ok4 = mb.read(r[4], 16).map(|s| w4.copy_from_slice(s)).is_ok();
                         eprintln!("CRASHDUMP#{n} ins={} pc={:08x} r0={:08x} r1={:08x} r2={:08x} r3={:08x} r4={:08x} r5={:08x} r6={:08x} r7={:08x} r8={:08x} r9={:08x} lr={:08x} sp={:08x} [r4]ok={ok4}={w4:02x?} nodeaf40ok={okn}={wnd:02x?}", self.instrucoes, r[15], r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[14], r[13]);
+                        // TEMP (walker-frame naming): at the 0xad038796
+                        // stack-walk step, chase every heap word in the
+                        // visited frame as a Method* ([cand+16] = name).
+                        // The guest renderer prints only 1 of ~9 frames
+                        // (stale-method resolution); the host chase names
+                        // the other 8 without odex parsing. Same cap as
+                        // CRASHDUMP (fires together). Remove with CRASHOBJ.
+                        if r[15] == 0xad038796 {
+                            let mut wfr = [0u8; 64];
+                            if mb.read(r[4], 64).map(|s| wfr.copy_from_slice(s)).is_ok() {
+                                let mut ach = String::new();
+                                let mut i = 0usize;
+                                while i + 4 <= 64 {
+                                    let cand = u32::from_le_bytes([wfr[i], wfr[i+1], wfr[i+2], wfr[i+3]]);
+                                    if (0x4000_0000..0x4200_0000).contains(&cand) && cand != r[4] {
+                                        let mut wm = [0u8; 32];
+                                        if mb.read(cand, 32).map(|s| wm.copy_from_slice(s)).is_ok() {
+                                            let pa = u32::from_le_bytes([wm[16], wm[17], wm[18], wm[19]]);
+                                            let cl = u32::from_le_bytes([wm[0], wm[1], wm[2], wm[3]]);
+                                            let mut mnb = [0u8; 48];
+                                            if mb.read(pa, 48).map(|s| mnb.copy_from_slice(s)).is_ok() {
+                                                let fim = mnb.iter().position(|&b| b == 0).unwrap_or(48);
+                                                let t = String::from_utf8_lossy(&mnb[..fim]);
+                                                if !t.is_empty() && t.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                                                    // Classe via Method.clazz@+0,
+                                                    // Class.descriptor@+24.
+                                                    let mut cs = String::new();
+                                                    let mut wcl = [0u8; 32];
+                                                    if mb.read(cl, 32).map(|s| wcl.copy_from_slice(s)).is_ok() {
+                                                        let pa_d = u32::from_le_bytes([wcl[24], wcl[25], wcl[26], wcl[27]]);
+                                                        let mut dnb = [0u8; 72];
+                                                        if mb.read(pa_d, 72).map(|s| dnb.copy_from_slice(s)).is_ok() {
+                                                            let f2 = dnb.iter().position(|&b| b == 0).unwrap_or(72);
+                                                            let u = String::from_utf8_lossy(&dnb[..f2]);
+                                                            if !u.is_empty() && u.len() < 70 && u.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                                                                cs = format!("{u}.");
+                                                            }
+                                                        }
+                                                    }
+                                                    ach.push_str(&format!(" [+{i:#x}]={cand:#x} \"{cs}{t}\";"));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    i += 4;
+                                }
+                                if !ach.is_empty() {
+                                    eprintln!("FRAMEMETH#{n} r4={:08x}{ach}", r[4]);
+                                }
+                            }
+                        }
                     }
                 }
             }

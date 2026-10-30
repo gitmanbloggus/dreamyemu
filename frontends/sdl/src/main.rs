@@ -457,9 +457,14 @@ fn main() -> std::process::ExitCode {
                     eprintln!("fatia={fatia} pc={_pc:#x}");
                     // Presenter's source, first set wins: the FBMAP hunt
                     // publishes (mm, va0) when boot animation mmaps the fb.
-                    let va_linux = unsafe { FB_LINUX_MAPA }.1;
+                    let (mm_linux, va_linux) = unsafe { FB_LINUX_MAPA };
                     let va = if va_linux != 0 { va_linux } else { FB_LINUX_VA };
-                    if cpu.read_mem(va, &mut fb_linux).is_ok() {
+                    let lido = if va_linux != 0 {
+                        cpu.memoria().le_no_mm(mm_linux, va, &mut fb_linux).is_ok()
+                    } else {
+                        cpu.read_mem(va, &mut fb_linux).is_ok()
+                    };
+                    if lido {
                         let mut nz = 0u32;
                         let mut h = 0xcbf29ce4u32;
                         for par in fb_linux.chunks_exact(2) {
@@ -472,6 +477,23 @@ fn main() -> std::process::ExitCode {
                         }
                         let qual = if va_linux != 0 { "mapa" } else { "fbram" };
                         eprintln!("FBDUMP f={fatia} {qual} va={va:#x} nonzero={nz} hash={h:#x}");
+                        // Both halves of the double buffer (minui pans
+                        // between them with FBIOPUT_VSCREENINFO), latest
+                        // heartbeat wins: the frame on disk tracks the
+                        // run even headless, where no window samples.
+                        if va_linux != 0 {
+                            let mut duplo = vec![0u8; RAM_A6C0_TAMANHO * 2];
+                            if cpu.memoria().le_no_mm(mm_linux, va, &mut duplo).is_ok() {
+                                let mut rgb2 = vec![0u8; (LARGURA * ALTURA * 3) as usize];
+                                let mut ppm = format!("P6\n{LARGURA} {}\n255\n", ALTURA * 2).into_bytes();
+                                for metade in duplo.chunks_exact(RAM_A6C0_TAMANHO) {
+                                    rgb565_para_rgb888(metade, &mut rgb2);
+                                    ppm.extend_from_slice(&rgb2);
+                                }
+                                let _ = std::fs::create_dir_all("/tmp/opencode");
+                                let _ = std::fs::write("/tmp/opencode/fb_linux_duplo.ppm", &ppm);
+                            }
+                        }
                     } else {
                         eprintln!("FBDUMP f={fatia} va={va:#x} unmapped", va = va);
                     }
@@ -553,9 +575,16 @@ fn main() -> std::process::ExitCode {
                 if ultimo_envio.elapsed() >= Duration::from_millis(33) {
                     // Linux fb once the FBMAP hunt names it, else the SPL
                     // splash: first set wins and sticks (no switching back).
-                    let va_linux = unsafe { FB_LINUX_MAPA }.1;
+                    let (mm_linux, va_linux) = unsafe { FB_LINUX_MAPA };
                     let va = if va_linux != 0 { va_linux } else { RAM_A6C0_BASE };
-                    if cpu.read_mem(va, &mut fb).is_ok() {
+                    // The fb mmap lives in the drawing task's mm, rarely
+                    // the current one when this samples (see `le_no_mm`).
+                    let lido = if va_linux != 0 {
+                        cpu.memoria().le_no_mm(mm_linux, va, &mut fb).is_ok()
+                    } else {
+                        cpu.read_mem(va, &mut fb).is_ok()
+                    };
+                    if lido {
                         rgb565_para_rgb888(&fb, &mut rgb);
                         let _ = textura.update(None, &rgb, (LARGURA * 3) as usize);
                         let _ = tela.copy(&textura, None, None);
@@ -572,6 +601,7 @@ fn main() -> std::process::ExitCode {
                             mostrou_linux = true;
                             let mut ppm = format!("P6\n{LARGURA} {ALTURA}\n255\n").into_bytes();
                             ppm.extend_from_slice(&rgb);
+                            let _ = std::fs::create_dir_all("/tmp/opencode");
                             let _ = std::fs::write("/tmp/opencode/fb_linux.ppm", &ppm);
                             eprintln!("FBDUMP first linux frame -> /tmp/opencode/fb_linux.ppm");
                         }
